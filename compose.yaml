@@ -18,9 +18,9 @@ services:
       # a read-only mount on /sources prevents Docker creating child mountpoints.
       # Mount selected host directories below /sources, for example:
       - /www/wwwroot:/sources/websites:ro
-      - /data/apps:/sources/apps:ro
-      - /data/backups:/sources/backups:ro
-      - /data/bt_backup:/sources/bt_backup:ro
+      # - /data/apps:/sources/apps:ro
+      # - /data/backups:/sources/backups:ro
+      # - /data/bt_backup:/sources/bt_backup:ro
       # The container runs as root and can read a root-owned rclone config.
       - ${RCLONE_CONFIG_DIR}:/config:ro
     stop_grace_period: 30s
