@@ -1,0 +1,94 @@
+# AzureKiln Backup
+
+目录与 Vaultwarden 备份管理系统。一个管理员账号，可选 AzureKiln OAuth2 授权登录；每条任务独立选择 rclone 远端及子目录，支持定时执行、密码加密、历史保留和邮件通知。
+
+## 本地运行
+
+要求 Node.js 24 或更新版本。
+
+```powershell
+npm install
+npm run dev
+```
+
+开发入口默认 `http://127.0.0.1:5173`，API 默认 `16323`；端口被占用时开发脚本会选择空闲端口。第一次打开页面创建管理员。配置和数据库保存在 `.data/`，默认允许备份的源目录为 `sources/`。通过 `.env` 设置 `SOURCE_ROOTS` 扩大允许范围，Windows 多目录用分号分隔，Linux 用冒号分隔。
+
+备份需要 rclone、7-Zip 和 tar；Vaultwarden 的 SQLite 备份使用 Node 自带的在线备份接口，PostgreSQL/MySQL 则需要对应数据库客户端。缺少工具时页面显示实际状态，不会生成模拟备份。可通过 `RCLONE_BINARY`、`SEVEN_ZIP_BINARY`、`PG_DUMP_BINARY`、`MYSQL_DUMP_BINARY` 指定完整路径。
+
+```powershell
+npm run check
+npm test
+npm run build
+npm start
+```
+
+构建后的前端由 API 服务直接提供，默认生产入口 `http://127.0.0.1:16323`。本地设置见 `.env.example`。
+
+## Docker 部署
+
+使用 `.env.docker.example` 对应的变量配置 `.env`，填写私密的 `SETUP_TOKEN` 或初始管理员账号密码。按实际域名设置 `BACKUP_PUBLIC_URL`，修改 `compose.yaml` 中 `/sources` 下的目录挂载及现有 rclone 配置挂载。`/sources` 是容器内的备份源目录入口，宿主机路径可按需映射到它的子目录；`/data` 保存本应用的状态，两者不能重叠。登录后“文件管理”页面会列出 `SOURCE_ROOTS` 允许范围内的容器目录与文件。该页面只读，可从目录直接新建备份任务。
+
+```shell
+docker compose up -d --build
+```
+
+示例 Compose 只把端口发布到宿主机 `127.0.0.1:16323`，由 Nginx/宝塔反向代理提供 HTTPS。容器以 root 运行，源目录保持只读挂载。无需 Docker socket。
+
+现有 rclone 配置目录通过 `RCLONE_CONFIG_DIR` 只读挂载到 `/config`，然后在“存储”页面从 `/config/rclone.conf` 导入。实际运行配置会保存到持久卷中的私有目录，可写入刷新后的 OAuth token。重新导入是明确操作，不会定期覆盖已经刷新的 token。
+
+容器以 root 运行，可以读取仅 root 可访问的 rclone 配置。导入后的运行配置保存在 `/data/rclone/`，原配置挂载保持只读。
+
+## 文件管理
+
+登录后打开“文件管理”。只有一个允许的根目录时自动进入；多个根目录时先显示目录列表。支持面包屑、上一级、当前目录名称搜索（不区分大小写）、每页 100 项、刷新，以及文件大小和修改时间。目录排在文件之前；搜索覆盖当前目录全部条目，不递归搜索子目录。点击目录旁的加号或“备份此目录”，可将路径带入新任务。
+
+例如，在 `compose.yaml` 的 `volumes` 下添加实际宿主机目录：
+
+```yaml
+- /www/wwwroot:/sources/websites:ro
+- /srv/vaultwarden:/sources/vaultwarden:ro
+```
+
+`.env` 中使用 `SOURCE_ROOTS=/sources` 时，页面会显示 `websites` 和 `vaultwarden`。如果只允许单独访问这两个目录，可设置 `SOURCE_ROOTS='["/sources/websites","/sources/vaultwarden"]'`。页面使用容器内路径；修改配置后运行 `docker compose up -d` 使挂载和环境变量生效。
+
+页面为空时检查挂载是否已启用、容器路径是否包含在 `SOURCE_ROOTS` 中，以及容器是否能读取文件并进入目录。符号链接不会展示或跟随。目录暂时不可用时会显示错误，恢复挂载或权限后点击“重试”。
+
+## 任务行为
+
+普通目录任务先创建保留文件元数据的 tar，再按所选格式压缩。加密使用 7z 或 ZIP 的 AES-256；7z 同时加密文件名。未加密任务可使用 tar.gz。任务编辑器可为 7z 选择 LZMA2 或 LZMA 算法，并设置 1–8 个压缩线程及 8–256 MiB 字典。线程和字典的“自动”档在压缩级别 7–9 时分别使用 1 线程和 32 MiB 字典，以降低低内存服务器上的换页风险；低级别则交由 7z 决定。更大的字典通常会增加内存占用。ZIP 使用 Deflate，tar.gz 使用 gzip，这两种格式不应用 7z 算法和字典设置。
+
+“版本文件夹名”和“压缩包文件名”可在任务的压缩设置中配置，支持 `{datetime}`（UTC 时间）和 `{task}`（任务名）；文件夹名必须包含 `{datetime}`，压缩包扩展名由格式自动添加。默认远端布局为 `保存目录/2026-09-28_11-24-18-123Z/任务名.7z`，同目录的 `complete.json` 记录任务 ID、执行 ID、大小与 SHA-256。已有备份仍按原路径下载和清理，请勿手工移动或改名。
+
+排除规则支持路径文字、`*` 和 `?`，例如 `*.log`、`cache/**`；扩展 glob 语法不接受，以保证目录检查与归档工具的行为一致。
+
+Vaultwarden 专用任务包含 SQLite、PostgreSQL、MySQL/MariaDB 三种模式，默认 SQLite，页面按类型显示数据库连接和 TLS 字段。它生成数据库一致性快照/导出，并收集存在的 `config.json`、`rsa_key*`、`attachments`、`sends`，支持自定义路径。数据库失败则任务失败；可选内容不存在会记录为跳过。归档内保留上游的 `db.*`、`config.*`、`rsakey.*`、`attachments.*`、`sends.*` 结构。
+
+上传使用 rclone copy/copyto，每个任务、每次执行都有自己的远端目录。上传验证成功后立即删除本地压缩包和明文临时数据；邮件失败不阻止清理。失败临时数据受每任务最新一次、保留时间和总空间上限约束。过期删除仅作用于该任务记录的成功备份版本。
+
+临时空间通过预检查、下载预留和每 250 毫秒的检查控制；导出/压缩触及上限会中止并清理明文。检查间隔内仍可能产生短暂超额，应为大型任务预留足够磁盘空间。服务重启会清理中断任务遗留的明文和数据库凭据。
+
+## 授权登录与邮件
+
+在 AzureKiln OAuth2 创建机密客户端，回调地址为 `BACKUP_PUBLIC_URL` 加 `/api/auth/oidc/callback`。填写 issuer、Client ID、Client Secret 和允许登录的管理员 `sub`。系统使用授权码、PKCE、state、nonce 和 ID Token 校验，OAuth 身份映射到同一个管理员。
+
+邮件设置支持 STARTTLS、TLS 和无加密连接、发件人、多个收件人及测试邮件。任务可独立选择开始、成功和失败通知。通知状态与备份状态分别记录。
+
+MySQL/MariaDB 的“要求 TLS”同时验证服务端证书，需有效的信任链或配置 CA；连接失败时不会降级为明文。
+
+## 恢复与配置保管
+
+从任务版本列表下载归档，使用对应历史密码解密。普通目录解压内层 tar；Vaultwarden 归档按数据库类型恢复 `db.*`，并恢复配置、RSA、附件和 Sends。恢复覆盖原数据前停止 Vaultwarden，并先在独立目录/数据库验证归档。PostgreSQL 的 pg_dump 客户端不能比服务器主版本更旧；部署时核对镜像客户端版本，必要时提供匹配版本的可执行文件。
+
+数据库在线快照保证数据库自身一致性，附件在备份期间发生变化时不保证全局同一时刻的状态。严格一致性需要维护窗口。Vaultwarden `.env` 和 Compose 文件在数据目录之外时，应建立额外目录任务。
+
+配置中的密码使用独立密钥加密保存。请保护并备份持久数据及 `.data/secret.key`（容器位于 `/data`）；丢失密钥后无法恢复保存的凭据。轮换压缩密码只影响新版本，历史包仍需原密码。完成一次实际恢复验证后，再移除旧的 `vaultwarden-backup` 容器。
+
+普通 rclone 配置导入后自动使用 rclone 原生格式加密，生成的配置密码也加密保存；原配置文件不会被修改。导入已有加密配置时填写其密码，验证失败不会替换运行中的配置及密码。
+
+## 系统配置备份与导入
+
+“系统配置”是内置任务，初始为停用状态。编辑它，添加 rclone 目标、设置 7z 压缩包密码，并按需启用定时计划。执行时会对 `state.sqlite` 做在线快照，同时打包 `secret.key`、正在使用的 `rclone.conf`，以及容器可读取的部署 `.env` 和 `compose.yaml`。普通任务和系统任务都可以填写描述。系统归档强制采用 7z AES-256 加密；完成后可在该任务的“备份版本”中下载导出包。请单独保管压缩包密码。
+
+Compose 将宿主机 `.env` 和 `compose.yaml` 只读挂载到 `/system-config/`。其他部署方式可设置 `SYSTEM_ENV_FILE`、`SYSTEM_COMPOSE_FILE` 为容器内可读取的文件路径；未指定时仅在工作目录存在对应文件时纳入归档。源目录的数据和反向代理配置不在归档中。
+
+导入时，先用当前管理员账号登录，打开“系统配置”任务并选择“导入配置”，上传该任务导出的 7z 包和密码。上传包上限为 256 MiB，解压后的配置上限为 2 GiB。服务会验证归档、文件摘要、SQLite 完整性和加密密钥，暂存到 `/data/system-restore-pending`；执行 `docker compose restart backup` 后才替换当前任务、设置、管理员账号和运行中的 rclone 配置。替换前的状态保存在 `/data/system-restore-previous-*`；若替换中断，下次启动会先恢复原配置，再重试待导入归档。导入后的备份版本会在打开“备份版本”时根据远端完成记录补认，远端暂时不可用时可稍后重试。归档中的部署文件另存为 `/data/restored-deployment.env`、`/data/restored-compose.yaml`，需要在宿主机人工核对并应用；只读挂载不会被自动覆盖。使用外部 `BACKUP_MASTER_KEY` 时，重启前必须将该环境变量改为归档对应的密钥；暂存目录中的 `deployment.env` 可供核对。

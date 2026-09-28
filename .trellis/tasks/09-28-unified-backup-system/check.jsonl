@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/09-28-unified-backup-system/research/contracts.md","reason":"API, secrets, and backup lifecycle verification"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"End-to-end persisted state flow"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Source listing query validation and containment regressions"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Mounted file browser retry, stale responses, pagination and layout checks"}

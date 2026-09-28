@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/09-28-unified-backup-system/research/contracts.md","reason":"Authoritative API/runtime contract and upstream behavior"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Cross-layer consistency"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Authenticated source listing, metadata and path containment"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Mounted file browser state, source-prefill and responsive verification"}

@@ -1,0 +1,29 @@
+services:
+  backup:
+    build: .
+    user: "0:0"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SYSTEM_ENV_FILE: /system-config/.env
+      SYSTEM_COMPOSE_FILE: /system-config/compose.yaml
+    ports:
+      - "127.0.0.1:16323:16323"
+    volumes:
+      - backup-data:/data
+      - ./.env:/system-config/.env:ro
+      - ./compose.yaml:/system-config/compose.yaml:ro
+      # /sources is created by the image. Mount each source below it;
+      # a read-only mount on /sources prevents Docker creating child mountpoints.
+      # Mount selected host directories below /sources, for example:
+      - /www/wwwroot:/sources/websites:ro
+      - /data/apps:/sources/apps:ro
+      - /data/backups:/sources/backups:ro
+      - /data/bt_backup:/sources/bt_backup:ro
+      # The container runs as root and can read a root-owned rclone config.
+      - ${RCLONE_CONFIG_DIR}:/config:ro
+    stop_grace_period: 30s
+
+volumes:
+  backup-data:
