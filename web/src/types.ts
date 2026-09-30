@@ -46,6 +46,8 @@ export interface Run {
   targets?: Target[];
   cleanupStatus?: string;
   notificationStatus?: string;
+  backupKind?: 'full' | 'incremental';
+  changes?: { added: number; modified: number; deleted: number; sample: string[] };
   logs?: { id: number; at: string; level: string; message: string }[];
 }
 export interface Archive {
@@ -83,5 +85,15 @@ export interface Overview {
   lastSuccessAt?: string | null;
   recentRuns: Run[];
   tools: Record<string, ToolStatus | boolean> | ToolStatus[];
-  storage: { tempBytes?: number; usedBytes?: number; maxTempBytes?: number; failedRetentionHours?: number; tempDir?: string };
+  watchStatus?: Record<string, { state: 'watching' | 'error'; mode?: 'full' | 'incremental'; capturing?: boolean; pending: boolean; error: string | null; lastEventAt: string | null }>;
+  storage: LocalStorageStatus;
+}
+export interface LocalStorageStatus {
+  tempBytes: number;
+  retainedBytes: number;
+  maxTempBytes: number;
+  failedRetentionHours: number;
+  successCleanupMode?: 'immediate' | 'manual';
+  tempDir?: string;
+  localArchives: { runId: string; jobName: string; archiveName: string; bytes: number; createdAt: string }[];
 }

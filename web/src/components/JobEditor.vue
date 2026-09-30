@@ -14,6 +14,8 @@ form.archive.fileTemplate ??= '{task}';
 form.archive.method ??= 'lzma2';
 form.archive.threads ??= 0;
 form.archive.dictionaryMiB ??= 0;
+form.watch ??= { enabled: false, mode: 'full', debounceSeconds: 5 };
+form.watch.mode ??= 'full';
 if (!props.job && props.initialSourcePath) form.sourcePath = props.initialSourcePath;
 const tabs = ['基本信息', '目标位置', '压缩与保留', '计划与通知'];
 const tab = ref(0);
@@ -68,6 +70,7 @@ async function save() {
   if (form.type === 'directory' && !form.sourcePath.trim()) { showError('请选择源目录', 0); return; }
   if (form.type === 'vaultwarden' && !form.vaultwarden.dataDir.trim()) { showError('请选择 Vaultwarden 数据目录', 0); return; }
   if (form.type === 'vaultwarden' && form.vaultwarden.dbType !== 'sqlite' && (!form.vaultwarden.database.host.trim() || !form.vaultwarden.database.name.trim() || !form.vaultwarden.database.username.trim())) { showError('请填写数据库主机、数据库名称和用户名', 0); return; }
+  if (form.type !== 'directory') form.watch.enabled = false;
   if (!form.destinations.length && (form.type !== 'system' || form.enabled)) { showError('请添加备份目标', 1); return; }
   if (form.destinations.some(item => !item.remote)) { showError('请选择每个目标的 rclone 远端', 1); return; }
   if (form.archive.encrypted && !form.archive.password && !archivePasswordSet.value && (form.type !== 'system' || form.enabled)) { showError('请输入压缩包密码', 2); return; }
@@ -160,6 +163,14 @@ void loadRemotes();
         </section>
         <section v-show="tab === 3" class="form-section">
           <h3 class="form-heading">执行计划</h3>
+          <template v-if="form.type === 'directory'">
+            <label class="check-row"><input v-model="form.watch.enabled" type="checkbox" />文件变化后自动备份</label>
+            <div v-if="form.watch.enabled" class="form-grid separated-small watch-debounce">
+              <label class="field">监听备份方式<select v-model="form.watch.mode"><option value="full">整个目录</option><option value="incremental">仅新增和修改的文件</option></select></label>
+              <label class="field">变化合并时间（秒）<input v-model.number="form.watch.debounceSeconds" type="number" min="1" max="300" /></label>
+              <p v-if="form.watch.mode === 'incremental'" class="field full muted">启用时的现有文件作为基线，之后每次变化只打包新增和修改的文件，删除记录在 changes.json 中。手动和定时执行仍备份整个目录并重置基线；增量版本在更早于保留的完整版本后才会被清理。</p>
+            </div>
+          </template>
           <label class="check-row"><input v-model="form.schedule.enabled" type="checkbox" />定时执行</label>
           <div v-if="form.schedule.enabled" class="form-grid separated-small">
             <label class="field">常用计划<select v-model="cronPreset"><option value="">自定义</option><option v-for="preset in cronPresets" :key="preset.cron" :value="preset.cron">{{ preset.label }}</option></select></label>

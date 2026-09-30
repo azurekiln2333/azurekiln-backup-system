@@ -136,7 +136,7 @@ try {
   await page.getByLabel('确认密码', { exact: true }).fill('browser-admin-password');
   await page.getByRole('button', { name: '创建管理员' }).click();
   await page.locator('.main-content h1').waitFor();
-  assert.equal((await api('/jobs')).length, 0);
+  assert.equal((await api('/jobs')).filter(job => job.type !== 'system').length, 0);
   await screenshot('desktop-empty');
 
   // An explicit visit to the root chooser must beat an older initial response.
@@ -365,11 +365,16 @@ try {
   await dialog().getByRole('button', { name: '隐藏密码' }).click();
   await screenshot('desktop-encryption');
   await dialog().getByRole('button', { name: '计划与通知', exact: true }).click();
+  await dialog().getByLabel('文件变化后自动备份').check();
+  await dialog().getByLabel('变化合并时间（秒）').fill('1');
+  await screenshot('desktop-file-watch');
   await dialog().getByLabel('定时执行').check();
   await dialog().getByLabel('Cron 表达式').fill('0 3 * * *');
   await dialog().getByLabel('时区').selectOption('Asia/Shanghai');
   await dialog().getByRole('button', { name: '保存任务' }).click();
   await poll(() => api('/jobs'), jobs => jobs.some(job => job.name === 'Directory A'), 'directory job persisted');
+  assert.equal((await api('/jobs')).find(job => job.name === 'Directory A').watch.debounceSeconds, 1);
+  assert.equal((await api('/overview')).watchStatus[(await api('/jobs')).find(job => job.name === 'Directory A').id].state, 'watching');
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   const directoryRow = () => page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' });
   await directoryRow().waitFor();
@@ -392,6 +397,14 @@ try {
   assert.ok((await readFile(await download.path())).length > 0);
   assert.equal(await download.failure(), null);
   await closeDialog();
+
+  await navigate('settings');
+  await page.getByRole('button', { name: '临时文件', exact: true }).click();
+  await page.getByLabel('上传成功后的本地归档').selectOption('manual');
+  await page.locator('.settings-form section:visible').getByRole('button', { name: '保存设置' }).click();
+  await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
+  assert.equal((await api('/settings')).storage.successCleanupMode, 'manual');
+  await navigate('jobs');
 
   await page.getByRole('button', { name: '新建任务', exact: true }).click();
   await dialog().getByLabel('任务名称', { exact: true }).fill('Vaultwarden B');
@@ -419,9 +432,29 @@ try {
   await vaultRow.getByRole('button', { name: '立即备份' }).click();
   await poll(() => api('/runs'), runs => runs.items.length === 2 && runs.items.every(run => run.status === 'succeeded' && run.notificationStatus === 'sent'), 'vaultwarden run completed');
   await closeDialog();
+  const retained = await api('/storage');
+  assert.equal(retained.localArchives.length, 1);
+  assert.ok(retained.retainedBytes > 0);
+  await navigate('settings');
+  await page.getByRole('button', { name: '临时文件', exact: true }).click();
+  await page.locator('.local-archive-row').waitFor();
+  await page.locator('.toast-message').waitFor({ state: 'hidden' });
+  await screenshot('desktop-temp-storage-retained');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await screenshot('mobile-temp-storage-retained');
+  await page.setViewportSize({ width: 360, height: 800 });
+  await screenshot('small-mobile-temp-storage-retained');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  page.once('dialog', confirmation => confirmation.accept());
+  await page.getByRole('button', { name: /清理本地归档/ }).click();
+  await page.locator('.local-archive-row').waitFor({ state: 'hidden' });
+  assert.equal((await api('/storage')).tempBytes, 0);
+  await page.locator('.toast-message').waitFor({ state: 'hidden' });
+  await screenshot('desktop-temp-storage-cleaned');
   await navigate('jobs');
   await screenshot('desktop-jobs');
   await page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' }).locator('.job-primary').click();
+  await dialog().getByText('监听中', { exact: true }).waitFor();
   await dialog().getByRole('button', { name: /备份版本/ }).click();
   await dialog().locator('.archive-row').waitFor();
   await screenshot('desktop-archives');
@@ -438,6 +471,10 @@ try {
     await page.getByText('important.txt', { exact: true }).waitFor();
     await screenshot(`files-${viewport.width}`);
     await navigate('jobs');
+    await page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' }).getByRole('button', { name: '编辑任务' }).click();
+    await dialog().getByRole('button', { name: '计划与通知', exact: true }).click();
+    await screenshot(`watch-editor-${viewport.width}`);
+    await closeDialog();
     await page.getByRole('button', { name: '新建任务', exact: true }).click();
     await dialog().getByRole('button', { name: 'Vaultwarden', exact: true }).click();
     await dialog().getByLabel('数据库类型').selectOption('mysql');
@@ -470,9 +507,12 @@ try {
   await page.getByRole('button', { name: '备份概览', exact: true }).click();
   await screenshot('mobile-overview-dark');
   await poll(() => runtime.backupService.storage(), storage => storage.tempBytes === 0, 'downloads and successful staging cleaned');
+  await writeFile(path.join(sourceA, 'watched-change.txt'), 'File watch backup integration contents');
+  const watched = await poll(() => api('/runs'), runs => runs.items.length === 3 && runs.items[0].trigger === 'watch' && runs.items[0].status === 'succeeded' && runs.items[0].notificationStatus === 'sent', 'file change created a verified backup');
+  assert.equal(watched.items[0].targets[0].status, 'verified');
   assert.deepEqual(errors, [], 'Browser errors');
-  await writeFile(path.join(screenshotDir, 'verification.json'), JSON.stringify({ screenshots: evidence, browserErrors: errors, backups: 2, mailMessages: messages.length, checkedAt: new Date().toISOString() }, null, 2));
-  console.log(`Browser check passed: ${evidence.length} screenshots, 2 real encrypted backups, download, SMTP, login, responsive layouts. Artifacts: ${screenshotDir}`);
+  await writeFile(path.join(screenshotDir, 'verification.json'), JSON.stringify({ screenshots: evidence, browserErrors: errors, backups: 3, mailMessages: messages.length, checkedAt: new Date().toISOString() }, null, 2));
+  console.log(`Browser check passed: ${evidence.length} screenshots, 3 real encrypted backups including a watched change, download, SMTP, login, responsive layouts. Artifacts: ${screenshotDir}`);
 } catch (error) {
   if (page) {
     await page.screenshot({ path: path.join(screenshotDir, 'failure.png'), fullPage: true });

@@ -29,6 +29,12 @@ export const jobSchema = z.object({
     cron: z.string().trim().min(1).default('0 3 * * *'),
     timezone: z.string().default('Asia/Shanghai'),
   }).default({}),
+  watch: z.object({
+    enabled: z.boolean().default(false),
+    // full: every change re-archives the whole directory; incremental: watch runs archive only new/modified files.
+    mode: z.enum(['full', 'incremental']).default('full'),
+    debounceSeconds: z.number().int().min(1).max(300).default(5),
+  }).default({}),
   archive: z.object({
     format: z.enum(['tar.gz', '7z', 'zip']).default('7z'),
     encrypted: z.boolean().default(false),
@@ -97,6 +103,7 @@ export const settingsSchema = z.object({
     configPassword: z.string().max(1024).optional(),
   }).default({}),
   storage: z.object({
+    successCleanupMode: z.enum(['immediate', 'manual']).default('immediate'),
     failedRetentionHours: z.number().int().min(0).max(168).default(24),
     maxTempBytes: z.number().int().min(1048576).max(Number.MAX_SAFE_INTEGER).default(10737418240),
   }).default({}),

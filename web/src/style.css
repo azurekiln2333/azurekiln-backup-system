@@ -256,6 +256,7 @@ input.switch:checked:after { transform: translateX(13px); }
 .form-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 18px; }
 .separated { margin-top: 29px; padding-top: 23px; border-top: 1px solid var(--border); }
 .separated-small { margin-top: 19px; }
+.watch-debounce { margin-bottom: 21px; }
 .range-row { display: flex; align-items: center; gap: 12px; min-height: 41px; }
 .range-row output { width: 28px; text-align: center; background: var(--surface-soft); border-radius: 4px; padding: 5px; font-size: 12px; }
 .destination-editor { border-top: 1px solid var(--border); padding: 14px 0 24px; }
@@ -281,6 +282,15 @@ input.switch:checked:after { transform: translateX(13px); }
 .settings-form .section-heading { margin-bottom: 27px; padding-bottom: 19px; border-bottom: 1px solid var(--border); }
 .form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 23px; }
 .property-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 27px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; }
+.local-storage-section { margin-top: 31px; padding-top: 25px; border-top: 1px solid var(--border); }
+.settings-form .local-storage-section .section-heading { margin-bottom: 18px; padding-bottom: 0; border: 0; }
+.local-archives-heading { margin-top: 29px; }
+.local-archives-empty { padding: 16px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.local-archive-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--border); }
+.local-archive-row > div { min-width: 0; flex: 1; }
+.local-archive-row strong, .local-archive-row span, .local-archive-row small { display: block; overflow-wrap: anywhere; }
+.local-archive-row strong { font-size: 12px; font-weight: 600; }
+.local-archive-row span, .local-archive-row small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .storage-config, .connection-form { max-width: 765px; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 21px 25px; margin-bottom: 25px; }
 .property-grid > div { min-width: 0; }

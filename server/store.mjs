@@ -51,6 +51,7 @@ export function createStore(config) {
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS oauth_transactions (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS secret_check (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS watch_baselines (job_id TEXT PRIMARY KEY, source_path TEXT NOT NULL, captured_at TEXT NOT NULL, data TEXT NOT NULL);
   `);
   function seal(value) {
     const iv = randomBytes(12);
@@ -150,7 +151,26 @@ export function createStore(config) {
       db.prepare('UPDATE jobs SET data=? WHERE id=?').run(encode(next, jobSecrets), id);
       return store.getJob(id);
     },
-    deleteJob(id) { return id !== SYSTEM_JOB_ID && db.prepare('DELETE FROM jobs WHERE id=?').run(id).changes > 0; },
+    deleteJob(id) {
+      if (id === SYSTEM_JOB_ID) return false;
+      db.prepare('DELETE FROM watch_baselines WHERE job_id=?').run(id);
+      return db.prepare('DELETE FROM jobs WHERE id=?').run(id).changes > 0;
+    },
+    // Incremental watch baseline: the file snapshot ({relativePath: [size, mtimeMs] | ['link', target]}) already backed up.
+    getWatchBaseline(jobId, sourcePath) {
+      const row = db.prepare('SELECT source_path,captured_at,data FROM watch_baselines WHERE job_id=?').get(jobId);
+      return row && row.source_path === sourcePath ? { capturedAt: row.captured_at, entries: JSON.parse(row.data) } : null;
+    },
+    saveWatchBaseline(jobId, sourcePath, entries, { onlyIfMissing = false } = {}) {
+      const data = JSON.stringify(entries);
+      const capturedAt = new Date().toISOString();
+      // onlyIfMissing never overwrites a baseline for the same source, so a slow initial capture cannot undo a finished run.
+      const sql = onlyIfMissing
+        ? 'INSERT INTO watch_baselines(job_id,source_path,captured_at,data) VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET source_path=excluded.source_path,captured_at=excluded.captured_at,data=excluded.data WHERE watch_baselines.source_path<>excluded.source_path'
+        : 'INSERT INTO watch_baselines(job_id,source_path,captured_at,data) VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET source_path=excluded.source_path,captured_at=excluded.captured_at,data=excluded.data';
+      return db.prepare(sql).run(jobId, sourcePath, capturedAt, data).changes > 0;
+    },
+    deleteWatchBaseline(jobId) { db.prepare('DELETE FROM watch_baselines WHERE job_id=?').run(jobId); },
     getSettings({ includeSecrets = false } = {}) {
       const row = db.prepare('SELECT data FROM settings WHERE id=1').get();
       return row ? decode(row.data, settingsSecrets, includeSecrets) : decode(encode(settingsSchema.parse({}), settingsSecrets), settingsSecrets, includeSecrets);

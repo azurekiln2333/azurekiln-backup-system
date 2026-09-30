@@ -10,7 +10,7 @@ import { writeSync } from 'node:fs';
 import { loadConfig } from '../server/config.mjs';
 import { createStore } from '../server/store.mjs';
 import { createRcloneService } from '../server/rclone.mjs';
-import { archiveArguments, createBackupService, fileHashes, parseArchivePercent, verifyRemote } from '../server/backup.mjs';
+import { archiveArguments, createBackupService, diffSnapshot, fileHashes, parseArchivePercent, verifyRemote } from '../server/backup.mjs';
 import { runProcess, redact } from '../server/process.mjs';
 import { createScheduler } from '../server/scheduler.mjs';
 import { jobSchema } from '../shared/contracts.mjs';
@@ -141,6 +141,61 @@ test('directory upload, completion marker, download and immediate local cleanup 
   } finally { await f.cleanup(); }
 });
 
+test('manual cleanup retains successful archives across runs and restart until explicitly removed', { skip: !liveTools }, async () => {
+  const f = await fixture();
+  let restarted;
+  try {
+    f.store.saveSettings({ storage: { successCleanupMode: 'manual', failedRetentionHours: 0 } });
+    await writeFile(path.join(f.source, 'document.txt'), 'retained backup');
+    const job = f.job();
+    const first = await waitRun(f.store, f.service.enqueue(job.id).id);
+    const second = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(first.status, 'succeeded');
+    assert.equal(second.status, 'succeeded');
+    for (const run of [first, second]) {
+      assert.equal(run.cleanupStatus, 'retained');
+      assert.equal(existsSync(path.join(f.config.tempDir, job.id, run.id, run.archiveName)), true);
+      assert.equal(existsSync(path.join(f.config.tempDir, job.id, run.id, 'complete.json')), false);
+    }
+    f.store.saveSettings({ storage: { successCleanupMode: 'immediate' } });
+    const third = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(third.status, 'succeeded');
+    assert.equal(third.cleanupStatus, 'cleaned');
+    await f.service.shutdown();
+    restarted = createBackupService({ config: f.config, store: f.store, rclone: f.rclone });
+    const before = await restarted.storage();
+    assert.equal(before.localArchives.length, 2);
+    assert.ok(before.retainedBytes > 0);
+    assert.ok(before.tempBytes >= before.retainedBytes);
+    assert.equal(f.store.getRun(first.id).cleanupStatus, 'retained');
+    await restarted.clearLocalArchive(first.id);
+    assert.equal(f.store.getRun(first.id).cleanupStatus, 'cleaned');
+    assert.equal(existsSync(path.join(f.config.tempDir, job.id, first.id)), false);
+    assert.equal((await restarted.storage()).localArchives.length, 1);
+    assert.deepEqual(await restarted.clearLocalArchives(), { cleaned: 1 });
+    assert.equal(f.store.getRun(second.id).cleanupStatus, 'cleaned');
+    assert.equal((await restarted.storage()).tempBytes, 0);
+    await assert.rejects(restarted.clearLocalArchive(second.id), { code: 'LOCAL_ARCHIVE_NOT_FOUND' });
+  } finally { await restarted?.shutdown(); await f.cleanup(); }
+});
+
+test('retained successful archive is never evicted to make space for a new run', { skip: !liveTools }, async () => {
+  const f = await fixture();
+  try {
+    f.store.saveSettings({ storage: { successCleanupMode: 'manual', failedRetentionHours: 0 } });
+    await writeFile(path.join(f.source, 'large.bin'), randomBytes(850000));
+    const job = f.job();
+    const first = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(first.status, 'succeeded', JSON.stringify(first));
+    f.store.saveSettings({ storage: { maxTempBytes: 1048576 } });
+    const second = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(second.status, 'failed');
+    assert.match(second.error, /temporary storage limit/i);
+    assert.equal(f.store.getRun(first.id).cleanupStatus, 'retained');
+    assert.equal(existsSync(path.join(f.config.tempDir, job.id, first.id, first.archiveName)), true);
+  } finally { await f.cleanup(); }
+});
+
 test('custom folder and archive names remain readable while IDs stay in the completion record', { skip: !liveTools }, async () => {
   const f = await fixture();
   try {
@@ -250,6 +305,93 @@ test('upload failure preserves previous successful archive and bounded failure s
     assert.equal(next.status, 'succeeded', JSON.stringify(next));
     assert.equal(existsSync(path.join(f.remote, successful.targets[0].path)), false, 'retention removes recorded older success');
     assert.equal(existsSync(path.join(f.remote, next.targets[0].path)), true);
+  } finally { await f.cleanup(); }
+});
+
+test('snapshot diff reports added, modified and deleted paths without counting excluded ones', () => {
+  const previous = { 'a.txt': [1, 10], 'b.txt': [2, 20], 'c.txt': [3, 30], 'skip/old.log': [4, 40] };
+  const current = { 'a.txt': [1, 10], 'b.txt': [2, 25], 'd.txt': [5, 50] };
+  assert.deepEqual(diffSnapshot(previous, current, ['skip/**']), { added: ['d.txt'], modified: ['b.txt'], deleted: ['c.txt'] });
+});
+
+async function extractIncremental(f, job, run) {
+  const download = await f.service.prepareDownload(job.id, run.id, job.destinations[0].id);
+  const extract = await mkdtemp(path.join(f.root, 'extract-'));
+  await runProcess('tar', ['-xzf', download.path, '-C', extract]);
+  await download.cleanup();
+  const names = await readdir(extract);
+  const inner = names.find((name) => name.startsWith('incremental.'));
+  const files = path.join(extract, 'files'); await mkdir(files);
+  await runProcess('tar', ['-xf', path.join(extract, inner), '-C', files]);
+  const changes = JSON.parse(await readFile(path.join(extract, names.find((name) => name.startsWith('changes.'))), 'utf8'));
+  const list = async (directory, prefix = '') => (await Promise.all((await readdir(directory, { withFileTypes: true })).map((entry) => entry.isDirectory() ? list(path.join(directory, entry.name), `${prefix}${entry.name}/`) : [`${prefix}${entry.name}`]))).flat().sort();
+  return { names, files, changes, contents: await list(files) };
+}
+
+test('incremental watch runs archive only new and modified files while manual runs stay full', { skip: !liveTools }, async () => {
+  const f = await fixture();
+  try {
+    for (const name of ['1.txt', '2.txt', '3.txt', '4.txt']) await writeFile(path.join(f.source, name), name);
+    await mkdir(path.join(f.source, 'cache'));
+    const job = f.job({ excludes: ['cache/**'], watch: { enabled: true, mode: 'incremental', debounceSeconds: 1 } });
+    assert.deepEqual(await f.service.ensureWatchBaseline(job.id), { created: true });
+    assert.deepEqual(await f.service.ensureWatchBaseline(job.id), { created: false }, 'existing baseline is kept');
+
+    await writeFile(path.join(f.source, '5.txt'), 'five');
+    await writeFile(path.join(f.source, 'cache', 'ignored.bin'), 'ignored');
+    const first = await waitRun(f.store, f.service.enqueue(job.id, 'watch').id);
+    assert.equal(first.status, 'succeeded', JSON.stringify(first));
+    assert.equal(first.backupKind, 'incremental');
+    assert.deepEqual(first.changes, { added: 1, modified: 0, deleted: 0, sample: ['5.txt'] });
+    assert.match(first.archiveName, /\.incremental\.tar\.gz$/);
+    const firstArchive = await extractIncremental(f, job, first);
+    assert.deepEqual(firstArchive.contents, ['5.txt']);
+    assert.equal(await readFile(path.join(firstArchive.files, '5.txt'), 'utf8'), 'five');
+    assert.equal(JSON.parse(await readFile(path.join(f.remote, path.dirname(first.targets[0].path), 'complete.json'), 'utf8')).backupKind, 'incremental');
+
+    const idle = await waitRun(f.store, f.service.enqueue(job.id, 'watch').id);
+    assert.equal(idle.status, 'succeeded');
+    assert.equal(idle.archiveName, null);
+    assert.deepEqual(idle.targets, []);
+    assert.equal(idle.notificationStatus, 'disabled');
+
+    await writeFile(path.join(f.source, '2.txt'), 'two, edited and longer');
+    await rm(path.join(f.source, '3.txt'));
+    await mkdir(path.join(f.source, 'nested'));
+    await writeFile(path.join(f.source, 'nested', '6.txt'), 'six');
+    const second = await waitRun(f.store, f.service.enqueue(job.id, 'watch').id);
+    assert.equal(second.status, 'succeeded', JSON.stringify(second));
+    const secondArchive = await extractIncremental(f, job, second);
+    assert.deepEqual(secondArchive.contents, ['2.txt', 'nested/6.txt']);
+    assert.deepEqual([secondArchive.changes.added, secondArchive.changes.modified, secondArchive.changes.deleted], [['nested/6.txt'], ['2.txt'], ['3.txt']]);
+
+    const full = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(full.status, 'succeeded', JSON.stringify(full));
+    assert.equal(full.backupKind, 'full');
+    assert.doesNotMatch(full.archiveName, /incremental/);
+    await writeFile(path.join(f.source, '7.txt'), 'seven');
+    const afterFull = await waitRun(f.store, f.service.enqueue(job.id, 'watch').id);
+    assert.deepEqual(afterFull.changes.sample, ['7.txt'], 'a full run resets the baseline');
+  } finally { await f.cleanup(); }
+});
+
+test('incremental versions survive retention until a newer retained full version covers them', { skip: !liveTools }, async () => {
+  const f = await fixture();
+  try {
+    await writeFile(path.join(f.source, 'base.txt'), 'base');
+    const job = f.job({ retention: { days: 0, keepLast: 1 }, watch: { enabled: true, mode: 'incremental', debounceSeconds: 1 } });
+    const full1 = await waitRun(f.store, f.service.enqueue(job.id).id);
+    const incrementals = [];
+    for (const name of ['a.txt', 'b.txt']) {
+      await writeFile(path.join(f.source, name), name);
+      incrementals.push(await waitRun(f.store, f.service.enqueue(job.id, 'watch').id));
+    }
+    for (const run of [full1, ...incrementals]) assert.equal(run.status, 'succeeded', JSON.stringify(run));
+    for (const run of [full1, ...incrementals]) assert.equal(existsSync(path.join(f.remote, run.targets[0].path)), true, 'keepLast counts only full versions');
+    const full2 = await waitRun(f.store, f.service.enqueue(job.id).id);
+    assert.equal(full2.status, 'succeeded', JSON.stringify(full2));
+    for (const run of [full1, ...incrementals]) assert.equal(existsSync(path.join(f.remote, run.targets[0].path)), false, `${run.backupKind} ${run.id} is covered by the newer full version`);
+    assert.equal(existsSync(path.join(f.remote, full2.targets[0].path)), true);
   } finally { await f.cleanup(); }
 });
 

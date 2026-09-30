@@ -4,7 +4,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import nodemailer from 'nodemailer';
-import { isWithin, resolveSourcePath } from './config.mjs';
+import { AppError, isWithin, resolveSourcePath } from './config.mjs';
+import { isExcluded } from './exclusions.mjs';
 import { aborted, probe, redact, runProcess } from './process.mjs';
 import { normalizeRemotePath } from './rclone.mjs';
 
@@ -76,6 +77,18 @@ export function parseArchivePercent(line) {
   return value !== null && value <= 100 ? value : null;
 }
 
+// Compare two snapshots ({relativePath: [size, mtimeMs] | ['link', target]}); excluded paths never count as deleted.
+export function diffSnapshot(previous, current, excludes = []) {
+  const added = [], modified = [], deleted = [];
+  for (const [name, value] of Object.entries(current)) {
+    const old = previous[name];
+    if (!old) added.push(name);
+    else if (old[0] !== value[0] || old[1] !== value[1]) modified.push(name);
+  }
+  for (const name of Object.keys(previous)) if (!(name in current) && !isExcluded(name, excludes)) deleted.push(name);
+  return { added: added.sort(), modified: modified.sort(), deleted: deleted.sort() };
+}
+
 function renderArchiveComponent(template, jobName, datetime) {
   const task = jobName.replace(/[^\p{L}\p{N} ._-]/gu, '_').replace(/^[ ._-]+|[ ._-]+$/g, '').slice(0, 100) || 'backup';
   const rendered = template.replace(/\{datetime\}/g, datetime).replace(/\{task\}/g, task).replace(/^[. ]+|[. ]+$/g, '');
@@ -134,6 +147,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
     await mkdir(config.tempDir, { recursive: true, mode: 0o700 });
     const storage = store.getSettings().storage;
     const folders = [];
+    let retainedBytes = 0;
     for (const jobEntry of await readdir(config.tempDir, { withFileTypes: true }).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
       if (!jobEntry.isDirectory() || !ownedId.test(jobEntry.name)) continue;
       const jobDir = path.join(config.tempDir, jobEntry.name);
@@ -146,6 +160,10 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         if (run && !finished.has(run.status)) continue;
         const info = await stat(runDir).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
         if (!info) continue;
+        if (run?.status === 'succeeded' && run.cleanupStatus === 'retained') {
+          retainedBytes += await treeSize(runDir);
+          continue;
+        }
         runs.push({ path: runDir, runId: runEntry.name, time: info.mtimeMs, bytes: await treeSize(runDir) });
       }
       runs.sort((a, b) => b.time - a.time);
@@ -158,7 +176,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       }
     }
     folders.sort((a, b) => a.time - b.time);
-    let total = folders.reduce((sum, item) => sum + item.bytes, 0) + (excludePath ? await treeSize(excludePath) : 0) + await allocatedDownloads();
+    let total = retainedBytes + folders.reduce((sum, item) => sum + item.bytes, 0) + (excludePath ? await treeSize(excludePath) : 0) + await allocatedDownloads();
     for (const folder of folders) {
       if (total <= storage.maxTempBytes) break;
       await rm(folder.path, { recursive: true, force: true });
@@ -167,26 +185,53 @@ export function createBackupService({ store, config, rclone, runTool = runProces
     }
     if (total > storage.maxTempBytes) throw new Error('Backup temporary storage limit exceeded');
   }
-  const isExcluded = (relativePath, excludes) => {
-    const relative = relativePath.split(path.sep).join('/');
-    return excludes.some((pattern) => path.posix.matchesGlob(relative, pattern) || path.posix.matchesGlob(`./${relative}`, pattern) || (!pattern.startsWith('/') && !pattern.startsWith('./') && path.posix.matchesGlob(relative, `**/${pattern}`)));
-  };
-  async function validateTree(source, signal, root = source, excludes = []) {
+  // Optional `entries` collects the incremental snapshot keyed by '/'-separated relative path.
+  async function validateTree(source, signal, root = source, excludes = [], entries = null) {
     let bytes = 0;
     for (const entry of await readdir(source, { withFileTypes: true })) {
-      if (signal.aborted) throw aborted();
+      if (signal?.aborted) throw aborted();
       const item = path.join(source, entry.name);
-      if (isExcluded(path.relative(root, item), excludes)) continue;
+      const relative = path.relative(root, item);
+      if (isExcluded(relative, excludes)) continue;
       const info = await lstat(item);
       if (info.isSymbolicLink()) {
         const resolved = await realpath(item);
         await resolveSourcePath(config, resolved);
         if (!isWithin(root, resolved)) throw new Error('Source contains a symlink that escapes its directory');
-      } else if (info.isDirectory()) bytes += await validateTree(item, signal, root, excludes);
-      else if (info.isFile()) bytes += info.size;
-      else throw new Error('Backup source contains an unsupported special file');
+        if (entries) entries[relative.split(path.sep).join('/')] = ['link', path.relative(root, resolved).split(path.sep).join('/')];
+      } else if (info.isDirectory()) bytes += await validateTree(item, signal, root, excludes, entries);
+      else if (info.isFile()) {
+        bytes += info.size;
+        if (entries) entries[relative.split(path.sep).join('/')] = [info.size, info.mtimeMs];
+      } else throw new Error('Backup source contains an unsupported special file');
     }
     return bytes;
+  }
+  async function tarIncremental(source, stage, output, names, signal, secrets, runId) {
+    const present = [];
+    for (const name of names) {
+      // A file removed after preflight is recorded by the next diff; tar would fail on it now.
+      if (await lstat(path.join(source, ...name.split('/'))).catch(() => null)) present.push(name);
+      else log(runId, `Changed file disappeared before packaging: ${name}`, 'warn', secrets);
+    }
+    if (!present.length) throw new Error('Every changed file disappeared before packaging');
+    const listPath = path.join(stage, 'incremental-files.list');
+    await writeFile(listPath, present.map((name) => `./${name}\0`).join(''), { mode: 0o600 });
+    try {
+      await runTool(config.tarBinary ?? 'tar', ['-cf', output, '-C', source, '--null', '-T', listPath], { signal, secrets, onLine: (line) => log(runId, line, 'info', secrets) });
+    } finally { await rm(listPath, { force: true }); }
+    return present;
+  }
+  async function ensureWatchBaseline(jobId, { isDirty = () => false } = {}) {
+    const job = store.getJob(jobId);
+    if (!job || job.type !== 'directory' || job.watch?.mode !== 'incremental') return { created: false };
+    if (store.getWatchBaseline(jobId, job.sourcePath)) return { created: false };
+    const source = await resolveSourcePath(config, job.sourcePath, { directory: true });
+    const entries = {};
+    await validateTree(source, null, source, job.excludes ?? [], entries);
+    // Paths touched while the capture ran are left out, so the first watch run still backs them up.
+    for (const name of Object.keys(entries)) if (isDirty(name)) delete entries[name];
+    return { created: store.saveWatchBaseline(jobId, job.sourcePath, entries, { onlyIfMissing: true }) };
   }
   async function tarDirectory(source, output, excludes, signal, secrets, runId) {
     const resolved = await resolveSourcePath(config, source, { directory: true });
@@ -382,8 +427,15 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         ? target.destinationPath === destinationPath && target.path === normalizeRemotePath(`${destinationPath}/${target.folderName}/${run.archiveName}`)
         : target.path === normalizeRemotePath(`${destinationPath}/${job.id}/${run.id}/${run.archiveName}`));
       const candidates = completed.filter((run) => run.targets.some((target) => matches(run, target)));
-      for (const run of candidates.slice(job.retention.keepLast)) {
-        if (job.retention.days > 0 && Date.now() - Date.parse(run.createdAt) < job.retention.days * 86400000) continue;
+      // keepLast counts full versions only; an incremental is pruned once it predates the oldest retained full version.
+      const fulls = candidates.filter((run) => run.backupKind !== 'incremental');
+      const retainedFulls = fulls.filter((run, index) => index < job.retention.keepLast
+        || (job.retention.days > 0 && Date.now() - Date.parse(run.createdAt) < job.retention.days * 86400000));
+      const oldestRetainedFull = retainedFulls.length ? Date.parse(retainedFulls.at(-1).createdAt) : -Infinity;
+      const expired = candidates.filter((run) => run.backupKind === 'incremental'
+        ? Date.parse(run.createdAt) < oldestRetainedFull && !(job.retention.days > 0 && Date.now() - Date.parse(run.createdAt) < job.retention.days * 86400000)
+        : !retainedFulls.includes(run));
+      for (const run of expired) {
         for (const target of run.targets.filter((item) => matches(run, item))) {
           const base = assertOwnedTarget(run, target);
           try {
@@ -450,7 +502,28 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       monitor.unref();
       const source = job.type === 'system' ? null : await resolveSourcePath(config, job.type === 'vaultwarden' ? job.vaultwarden.dataDir || job.sourcePath : job.sourcePath, { directory: true });
       if (source && !path.relative(source, config.tempDir).startsWith('..') && !path.isAbsolute(path.relative(source, config.tempDir))) throw new Error('Temporary storage must be outside the backup source');
-      const bytes = job.type === 'system' ? (await stat(path.join(config.dataDir, 'state.sqlite'))).size : await validateTree(source, signal, source, job.type === 'directory' ? job.excludes : []);
+      const tracksBaseline = job.type === 'directory' && job.watch?.mode === 'incremental';
+      const snapshot = tracksBaseline ? {} : null;
+      let bytes = job.type === 'system' ? (await stat(path.join(config.dataDir, 'state.sqlite'))).size : await validateTree(source, signal, source, job.type === 'directory' ? job.excludes : [], snapshot);
+      let changes = null, baseline = null;
+      if (tracksBaseline && store.getRun(runId).trigger === 'watch') {
+        baseline = store.getWatchBaseline(jobId, job.sourcePath);
+        if (baseline) {
+          changes = diffSnapshot(baseline.entries, snapshot, job.excludes);
+          const packed = new Set([...changes.added, ...changes.modified].filter((name) => snapshot[name][0] !== 'link'));
+          bytes = [...packed].reduce((sum, name) => sum + snapshot[name][0], 0);
+        } else log(runId, 'No incremental baseline exists yet; this watch run archives the whole directory', 'warn');
+      }
+      update(runId, { backupKind: changes ? 'incremental' : 'full', ...(changes ? { changes: { added: changes.added.length, modified: changes.modified.length, deleted: changes.deleted.length, sample: [...changes.added, ...changes.modified].slice(0, 20) } } : {}) });
+      if (changes && !changes.added.length && !changes.modified.length) {
+        // Deletions alone produce no archive; the baseline keeps them so the next incremental archive records them.
+        log(runId, changes.deleted.length ? `No new or modified files; ${changes.deleted.length} deletion(s) will be recorded with the next change` : 'No new or modified files since the last backup');
+        clearInterval(monitor);
+        await monitorPromise;
+        await rm(stage, { recursive: true, force: true });
+        update(runId, { status: 'succeeded', phase: 'completed', targets: [], cleanupStatus: 'cleaned', notificationStatus: 'disabled', finishedAt: now(), progress: null });
+        return;
+      }
       const disk = await statfs(stage);
       if (bytes * 2 > Number(disk.bavail) * Number(disk.bsize)) throw new Error('Insufficient temporary disk space for this backup');
       if (bytes > store.getSettings().storage.maxTempBytes) throw new Error('Source exceeds the configured temporary storage budget');
@@ -465,7 +538,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
       const datetime = new Date(store.getRun(runId).createdAt).toISOString().replace('T', '_').replace(/[:.]/g, '-');
       const folderName = renderArchiveComponent(job.archive.folderTemplate ?? '{datetime}', job.name, datetime);
-      const archiveName = `${renderArchiveComponent(job.archive.fileTemplate ?? '{task}', job.name, datetime)}.${job.archive.format}`;
+      const archiveName = `${renderArchiveComponent(job.archive.fileTemplate ?? '{task}', job.name, datetime)}${changes ? '.incremental' : ''}.${job.archive.format}`;
       if (job.type === 'system') await prepareSystemConfig(payload, signal, runId, {
         jobId, runId, archiveName, folderName,
         targets: job.destinations.map((destination) => ({
@@ -475,7 +548,18 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         })),
       });
       else if (job.type === 'vaultwarden') await prepareVaultwarden(job, payload, stamp, signal, secrets, runId);
-      else await tarDirectory(source, path.join(payload, `directory.${stamp}.tar`), job.excludes, signal, secrets, runId);
+      else if (changes) {
+        const packed = new Set(await tarIncremental(source, stage, path.join(payload, `incremental.${stamp}.tar`), [...changes.added, ...changes.modified], signal, secrets, runId));
+        const missing = [...changes.added, ...changes.modified].filter((name) => !packed.has(name));
+        // Vanished files leave the new baseline, so a later reappearance is backed up again.
+        for (const name of missing) delete snapshot[name];
+        await writeFile(path.join(payload, `changes.${stamp}.json`), JSON.stringify({
+          kind: 'azurekiln-incremental', version: 1, jobId, runId, createdAt: store.getRun(runId).createdAt, baseCapturedAt: baseline.capturedAt,
+          added: changes.added.filter((name) => packed.has(name)), modified: changes.modified.filter((name) => packed.has(name)),
+          deleted: [...changes.deleted, ...missing.filter((name) => baseline.entries[name])].sort(),
+        }, null, 2), { mode: 0o600 });
+        log(runId, `Incremental archive: ${packed.size} new or modified file(s), ${changes.deleted.length} deletion(s) recorded`);
+      } else await tarDirectory(source, path.join(payload, `directory.${stamp}.tar`), job.excludes, signal, secrets, runId);
       await sweep(stage);
       phase(runId, 'archiving');
       archivePath = path.join(stage, archiveName);
@@ -523,7 +607,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       update(runId, { archiveName, archiveBytes: size, archiveSha256: hashes.SHA256, archiveFormat: job.archive.format, archiveEncrypted: job.archive.encrypted });
       await rm(payload, { recursive: true, force: true });
       await sweep(stage);
-      const manifest = { version: 2, jobId, runId, taskName: job.name, folderName, createdAt: store.getRun(runId).createdAt, archiveName, archiveBytes: size, sha256: hashes.SHA256, format: job.archive.format, encrypted: job.archive.encrypted };
+      const manifest = { version: 2, jobId, runId, taskName: job.name, folderName, createdAt: store.getRun(runId).createdAt, archiveName, archiveBytes: size, sha256: hashes.SHA256, format: job.archive.format, encrypted: job.archive.encrypted, ...(job.type === 'directory' ? { backupKind: changes ? 'incremental' : 'full' } : {}) };
       const manifestPath = path.join(stage, 'complete.json');
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
       const manifestHashes = await fileHashes(manifestPath);
@@ -570,9 +654,23 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       clearInterval(monitor);
       await monitorPromise;
       if (signal.aborted) throw aborted();
+      // Every destination verified: this snapshot is now the incremental baseline (full runs reset it).
+      if (snapshot) store.saveWatchBaseline(jobId, job.sourcePath, snapshot);
       phase(runId, 'cleanup');
-      await rm(stage, { recursive: true, force: true });
-      update(runId, { cleanupStatus: 'cleaned', status: 'succeeded' });
+      try {
+        if (store.getSettings().storage.successCleanupMode === 'manual') {
+          await rm(manifestPath, { force: true });
+          update(runId, { cleanupStatus: 'retained' });
+        } else {
+          await rm(stage, { recursive: true, force: true });
+          update(runId, { cleanupStatus: 'cleaned' });
+        }
+      } catch (cleanupError) {
+        const warning = redact(`Local archive cleanup failed: ${cleanupError.message}`, secrets);
+        update(runId, { cleanupStatus: 'failed', warnings: [...(store.getRun(runId).warnings ?? []), warning] });
+        log(runId, warning, 'warn', secrets);
+      }
+      update(runId, { status: 'succeeded' });
       phase(runId, 'pruning');
       await prune(job, runId, signal, secrets);
       update(runId, { phase: 'completed', finishedAt: now(), progress: null });
@@ -657,7 +755,29 @@ export function createBackupService({ store, config, rclone, runTool = runProces
   housekeeping = setInterval(() => { if (!draining) sweep().catch(() => {}); }, 60000);
   housekeeping.unref();
 
+  async function clearLocalArchive(runId) {
+    await recoveryReady;
+    const run = store.getRun(runId);
+    if (!run || run.status !== 'succeeded' || run.cleanupStatus !== 'retained') throw new AppError('Retained local archive does not exist.', 404, 'LOCAL_ARCHIVE_NOT_FOUND');
+    if (!run.archiveName || path.basename(run.archiveName) !== run.archiveName || ['.', '..'].includes(run.archiveName)) throw new AppError('Invalid local archive metadata.', 400, 'LOCAL_ARCHIVE_INVALID');
+    await rm(stagePath(run.jobId, run.id), { recursive: true, force: true });
+    update(run.id, { cleanupStatus: 'cleaned' });
+    return { cleaned: true };
+  }
+
   return {
+    isJobActive(jobId) { return queuedJobs.has(jobId); },
+    ensureWatchBaseline,
+    clearLocalArchive,
+    async clearLocalArchives() {
+      await recoveryReady;
+      let cleaned = 0;
+      for (const run of listAllRuns().filter((item) => item.status === 'succeeded' && item.cleanupStatus === 'retained')) {
+        await clearLocalArchive(run.id);
+        cleaned++;
+      }
+      return { cleaned };
+    },
     registerImportedArchive(archive) {
       if (!archive || archive.jobId !== 'system-config' || !Number.isSafeInteger(archive.archiveBytes) || archive.archiveBytes < 1
         || !/^[\da-f]{64}$/i.test(archive.archiveSha256 ?? '') || !Array.isArray(archive.targets) || archive.targets.length > 10
@@ -797,8 +917,15 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       return tracked;
     },
     async storage() {
+      await recoveryReady;
       const settings = store.getSettings().storage;
-      return { tempBytes: await treeSize(config.tempDir), ...settings };
+      const localArchives = [];
+      for (const run of listAllRuns().filter((item) => item.status === 'succeeded' && item.cleanupStatus === 'retained')) {
+        if (!run.archiveName || path.basename(run.archiveName) !== run.archiveName || ['.', '..'].includes(run.archiveName)) continue;
+        const info = await lstat(path.join(stagePath(run.jobId, run.id), run.archiveName)).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+        if (info?.isFile()) localArchives.push({ runId: run.id, jobName: run.jobName, archiveName: run.archiveName, bytes: info.size, createdAt: run.createdAt });
+      }
+      return { tempBytes: await treeSize(config.tempDir), retainedBytes: localArchives.reduce((sum, archive) => sum + archive.bytes, 0), localArchives, ...settings };
     },
     async health() {
       const [rcloneTool, sevenZip, tar, pgDump, mysqlDump] = await Promise.all([

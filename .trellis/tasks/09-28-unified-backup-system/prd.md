@@ -17,12 +17,13 @@ Provide one administrator console for directory and Vaultwarden backups, replaci
 
 - R1: One local administrator, initial setup, persistent sessions, optional OIDC binding to the same administrator; no public registration.
 - R2: Directory task CRUD, source browser, exclusions, enabled/paused state, manual execution, schedules/timezone, independent remote/path destinations, and retention.
+- R2a: Optional recursive change watching for directory tasks, with persisted debounce, queue-safe follow-up after changes during a run, exclusions, and visible watcher errors.
 - R3: Import existing rclone config, list remotes, browse/create directories, test connectivity; real missing-tool/config/error states.
 - R4: Vaultwarden mode: SQLite default, PostgreSQL, MySQL/MariaDB, configurable data/database/RSA/attachments/Sends paths and database connection/TLS options.
 - R5: Actual SQLite online backup, pg_dump, or transactional MySQL/MariaDB export. Collect config.json, rsa_key*, attachments, sends when present. Database failure fails the task; optional missing assets are recorded as skipped.
 - R6: One final archive per run, unencrypted tar.gz or AES-256 password-encrypted 7z/ZIP. Encrypt 7z filenames, preserve filesystem metadata with inner tar containers, and retain familiar Vaultwarden artifact names.
 - R7: Upload with copy/copyto, verify remote result, and prune only recorded task-owned completed versions.
-- R8: Delete archive/plaintext staging immediately after upload verification, independently of email. Bound failed staging to latest attempt per job, expiry, and global budget; retries may reuse the archive.
+- R8: Delete plaintext staging after archive creation. After verified upload, apply the persisted success-archive policy: immediate local removal by default, or retention until an administrator clears it. Show temporary-space usage and retained archives in settings. Bound failed staging to latest attempt per job, expiry, and global budget; retries may reuse the archive.
 - R9: Durable history, phase/progress, logs, target results, cancellation, bounded retries, interrupted-run recovery; default serial execution.
 - R10: Persisted SMTP settings, test email, per-task success/failure/start notifications; notification errors reported independently.
 - R11: Complete overview, task editor, execution/detail, archive/download, storage, and settings workflows; no seeded demo data.
@@ -34,7 +35,7 @@ Provide one administrator console for directory and Vaultwarden backups, replaci
 - AC2 (R2,R3): A->AB:path-a and B->BC:path-b persist independently across restart; source and remote pickers use real listings.
 - AC3 (R4,R5): Editor exposes all DB modes. A live WAL SQLite fixture produces a valid self-contained snapshot. PostgreSQL/MySQL command/error coverage and live-test limitations are explicit.
 - AC4 (R6): Real archives extract; encrypted archives reject wrong passwords and accept correct passwords.
-- AC5 (R7,R8): Real rclone local-remote upload verifies and removes local staging; failure cannot remove earlier successful versions.
+- AC5 (R7,R8): Real rclone local-remote upload verifies; the default policy removes local staging, while manual mode retains only the successful archive until explicit cleanup. Failure cannot remove earlier successful versions.
 - AC6 (R9): Queue prevents overlap, cancellation stops owned work, restart marks interrupted work correctly.
 - AC7 (R10): SMTP test works; mail failure neither changes backup success nor prevents local cleanup.
 - AC8 (R11): Desktop/mobile workflows and screenshots show no overflow/overlap and usable empty/error states.

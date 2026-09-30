@@ -9,6 +9,7 @@ import { AppError, isWithin, loadConfig, resolveSourcePath } from './config.mjs'
 import { createStore, mergeConfig, SYSTEM_JOB_ID } from './store.mjs';
 import { createAuth } from './auth.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
+import { createWatcher } from './watcher.mjs';
 
 const wrap = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
 const requiredText = z.string().trim().min(1).max(1024);
@@ -19,6 +20,7 @@ const runStatusSchema = z.enum(['queued', 'running', 'succeeded', 'failed', 'can
 
 function validateJob(input, config, { allowMissing = false } = {}) {
   const job = jobSchema.parse(input);
+  if (job.watch.enabled && job.type !== 'directory') throw new AppError('File watching is available only for directory tasks.', 400, 'WATCH_DIRECTORY_ONLY');
   if (!job.destinations.length && (job.type !== 'system' || job.enabled)) throw new AppError('Add at least one backup destination.', 400, 'DESTINATION_REQUIRED');
   if (job.type === 'system') {
     job.sourcePath = '';
@@ -86,6 +88,7 @@ export async function createApp(options = {}) {
     throw error;
   }
   const scheduler = options.scheduler || (await import('./scheduler.mjs')).createScheduler({ store, backupService });
+  const watcher = options.watcher || createWatcher({ store, config, backupService });
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -115,6 +118,7 @@ export async function createApp(options = {}) {
     if (job.type === 'system') throw new AppError('The built-in system configuration task already exists.', 409, 'SYSTEM_JOB_EXISTS');
     const saved = store.saveJob(job);
     scheduler.refresh();
+    watcher.refresh();
     res.status(201).json(store.getJob(saved.id));
   }));
   app.get('/api/jobs/:id', wrap((req, res) => res.json(getJob(req.params.id))));
@@ -127,9 +131,16 @@ export async function createApp(options = {}) {
     // An empty password field means keep the currently configured password.
     if (!merged.archive.password) merged.archive.password = previous.archive.password;
     if (!merged.vaultwarden.database.password) merged.vaultwarden.database.password = previous.vaultwarden.database.password;
-    const validated = validateJob(merged, config, { allowMissing: Object.keys(patch).length === 1 && patch.enabled === false });
+    // Pausing a task or turning its watcher off must still work while a mounted source is missing.
+    const onlyKey = Object.keys(patch).length === 1 ? Object.keys(patch)[0] : null;
+    const switchingOff = (onlyKey === 'enabled' && patch.enabled === false)
+      || (onlyKey === 'watch' && patch.watch && typeof patch.watch === 'object' && Object.keys(patch.watch).length === 1 && patch.watch.enabled === false);
+    const validated = validateJob(merged, config, { allowMissing: switchingOff });
     const saved = store.saveJob(validated, previous.id);
+    // Pausing keeps the baseline so a resumed task catches up; leaving incremental mode makes it stale.
+    if (saved.type !== 'directory' || saved.watch.mode !== 'incremental' || saved.sourcePath !== previous.sourcePath) store.deleteWatchBaseline(saved.id);
     scheduler.refresh();
+    watcher.refresh();
     res.json(store.getJob(saved.id));
   }));
   app.delete('/api/jobs/:id', wrap((req, res) => {
@@ -138,6 +149,7 @@ export async function createApp(options = {}) {
     if (store.listRuns({ jobId: req.params.id, limit: 10000 }).items.some((run) => ['queued', 'running'].includes(run.status))) throw new AppError('Cancel active executions before deleting this task.', 409, 'JOB_BUSY');
     store.deleteJob(req.params.id);
     scheduler.refresh();
+    watcher.refresh();
     res.status(204).end();
   }));
   app.post('/api/jobs/:id/run', wrap((req, res) => {
@@ -199,6 +211,9 @@ export async function createApp(options = {}) {
     const settings = validateSettings(merged);
     res.json(store.saveSettings(settings));
   }));
+  app.get('/api/storage', wrap(async (_req, res) => res.json(await backupService.storage())));
+  app.delete('/api/storage/local-archives', wrap(async (_req, res) => res.json(await backupService.clearLocalArchives())));
+  app.delete('/api/storage/local-archives/:id', wrap(async (req, res) => res.json(await backupService.clearLocalArchive(req.params.id))));
   app.post('/api/settings/test-email', wrap(async (req, res) => {
     const input = z.object({ to: z.string().email().optional() }).parse(req.body || {});
     const settings = store.getSettings({ includeSecrets: true });
@@ -254,7 +269,7 @@ export async function createApp(options = {}) {
     const lastSuccessAt = store.listRuns({ limit: 100000 }).items.find((run) => run.status === 'succeeded')?.finishedAt || null;
     const tools = await backupService.health();
     const storage = typeof backupService.storage === 'function' ? await backupService.storage() : { tempBytes: folderBytes(config.tempDir), ...store.getSettings().storage };
-    res.json({ jobs, totalJobs: jobs.length, enabledJobs: jobs.filter((job) => job.enabled).length, lastSuccessAt, recentRuns, tools, storage: { ...storage, tempDir: config.tempDir } });
+    res.json({ jobs, totalJobs: jobs.length, enabledJobs: jobs.filter((job) => job.enabled).length, lastSuccessAt, recentRuns, tools, watchStatus: watcher.status(), storage: { ...storage, tempDir: config.tempDir } });
   }));
   app.use('/api', (_req, _res, next) => next(new AppError('API endpoint does not exist.', 404, 'NOT_FOUND')));
   const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../web/dist');
@@ -272,8 +287,9 @@ export async function createApp(options = {}) {
     res.status(status >= 400 && status <= 599 ? status : 500).json({ error: { code, message, ...(error.details ? { details: error.details } : {}) } });
   });
   scheduler.start();
-  const close = async () => { scheduler.stop(); await backupService.shutdown(); if (!options.store) store.close(); };
-  return { app, store, config, backupService, rclone, scheduler, close };
+  watcher.start();
+  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); if (!options.store) store.close(); };
+  return { app, store, config, backupService, rclone, scheduler, watcher, close };
 }
 
 function folderBytes(folder) {

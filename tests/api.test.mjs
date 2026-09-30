@@ -23,9 +23,13 @@ async function fixture(options = {}) {
   const store = createStore(config);
   const scheduler = { start() {}, stop() {}, refresh() {} };
   const backupService = {
+    isJobActive() { return false; },
     enqueue(jobId, trigger) { return store.createRun(store.getJob(jobId), trigger); },
     async cancel(id) { store.updateRun(id, { status: 'cancelled' }); },
     async shutdown() {}, async getArchives() { return []; },
+    async storage() { return { tempBytes: 0, retainedBytes: 0, localArchives: [], ...store.getSettings().storage }; },
+    async clearLocalArchive() { return { cleaned: true }; },
+    async clearLocalArchives() { return { cleaned: 0 }; },
     async health() { return { rclone: { available: false, error: 'Tool not installed.' }, sqlite: { available: true, version: 'native' } }; },
   };
   const rclone = {
@@ -62,6 +66,25 @@ function inputJob(config, extra = {}) {
   return { name: 'Directory A', type: 'directory', sourcePath: path.join(config.sourceRoots[0], 'directory-a'), destinations: [{ remote: 'AB', path: 'backups/A' }], archive: { format: '7z', encrypted: true, password: 'private-archive-password' }, ...extra };
 }
 
+test('watch settings are limited to directory tasks and expose runtime status to administrators', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  assert.equal((await context.request('/api/overview')).status, 401);
+  await context.setup();
+  const created = await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { watch: { enabled: true, debounceSeconds: 1 } }) });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.watch.enabled, true);
+  assert.equal((await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { watch: { enabled: true, debounceSeconds: 0 } }) })).status, 400);
+  const status = (await context.request('/api/overview')).data.watchStatus[created.data.id];
+  assert.equal(status.state, 'watching');
+  const invalid = await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { type: 'vaultwarden', vaultwarden: { dataDir: path.join(context.config.sourceRoots[0], 'directory-a') }, watch: { enabled: true, debounceSeconds: 1 } }) });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.data.error.code, 'WATCH_DIRECTORY_ONLY');
+  const paused = await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { enabled: false } });
+  assert.equal(paused.status, 200);
+  assert.equal((await context.request('/api/overview')).data.watchStatus[created.data.id], undefined);
+});
+
 test('one-time setup, session persistence, CSRF, origin checks and local login', async (t) => {
   const context = await fixture();
   t.after(() => context.close());
@@ -83,6 +106,21 @@ test('one-time setup, session persistence, CSRF, origin checks and local login',
   assert.equal((await context.request('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 401);
   assert.equal((await context.request('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'a-strong-admin-password' } })).status, 200);
   assert.equal((await context.request('/api/jobs')).data.length, 2);
+});
+
+test('local archive policy and cleanup endpoints require authentication and CSRF', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  assert.equal((await context.request('/api/storage')).status, 401);
+  await context.setup();
+  const settings = await context.request('/api/settings', { method: 'PATCH', body: { storage: { successCleanupMode: 'manual' } } });
+  assert.equal(settings.status, 200);
+  assert.equal(settings.data.storage.successCleanupMode, 'manual');
+  assert.equal((await context.request('/api/storage')).data.successCleanupMode, 'manual');
+  assert.equal((await context.request('/api/storage/local-archives', { method: 'DELETE', csrf: false })).status, 403);
+  assert.deepEqual((await context.request('/api/storage/local-archives', { method: 'DELETE' })).data, { cleaned: 0 });
+  assert.deepEqual((await context.request('/api/storage/local-archives/some-run', { method: 'DELETE' })).data, { cleaned: true });
+  assert.equal((await context.request('/api/settings', { method: 'PATCH', body: { storage: { successCleanupMode: 'never' } } })).status, 400);
 });
 
 test('built-in system task keeps its identity and supports descriptions', async (t) => {
@@ -125,6 +163,24 @@ test('a missing mounted source can be paused without bypassing source boundaries
   assert.equal(paused.data.enabled, false);
   assert.equal((await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { enabled: true } })).status, 404);
   assert.equal((await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { enabled: false, sourcePath: path.dirname(context.config.sourceRoots[0]) } })).status, 403);
+});
+
+test('watch quick toggle keeps the watch mode and can switch off a missing source', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const created = await context.request('/api/jobs', { method: 'POST', body: { ...inputJob(context.config), watch: { enabled: false, mode: 'incremental', debounceSeconds: 7 } } });
+  assert.equal(created.status, 201);
+  const on = await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { watch: { enabled: true } } });
+  assert.equal(on.status, 200);
+  assert.deepEqual(on.data.watch, { enabled: true, mode: 'incremental', debounceSeconds: 7 });
+  rmSync(created.data.sourcePath, { recursive: true });
+  assert.equal((await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { watch: { enabled: true, debounceSeconds: 8 } } })).status, 404);
+  const off = await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { watch: { enabled: false } } });
+  assert.equal(off.status, 200);
+  assert.equal(off.data.watch.enabled, false);
+  assert.equal(off.data.watch.mode, 'incremental');
+  assert.equal((await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { watch: { enabled: true } } })).status, 404);
 });
 
 test('an exposed listener cannot initialize from a loopback proxy without setup authorization', async (t) => {
