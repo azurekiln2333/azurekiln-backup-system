@@ -72,6 +72,8 @@ function toggleGroup(key: string) {
 function expandAll() { collapsed.value = new Set(); }
 function collapseAll() { collapsed.value = new Set(groups.value.map(group => group.key)); }
 const allCollapsed = computed(() => groups.value.length > 0 && groups.value.every(group => collapsed.value.has(group.key)));
+// "Expand all" is pointless once nothing is collapsed, and vice versa.
+const anyCollapsed = computed(() => groups.value.some(group => collapsed.value.has(group.key)));
 
 function watchLabel(job: Job) {
   if (job.type !== 'directory' || !job.watch?.enabled) return '';
@@ -95,8 +97,8 @@ function watchLabel(job: Job) {
     <label class="group-mode"><span>分组方式</span><select v-model="groupMode" aria-label="分组方式"><option v-for="mode in groupModes" :key="mode" :value="mode">{{ groupModeLabels[mode] }}</option></select></label>
     <template v-if="groupMode !== 'none' && groups.length > 1">
       <span class="muted group-summary">{{ groups.length }} 组 · {{ matchCount }} 个任务</span>
-      <button type="button" class="text-button" :disabled="searching || !allCollapsed" @click="collapseAll">全部折叠</button>
-      <button type="button" class="text-button" :disabled="searching || allCollapsed" @click="expandAll">全部展开</button>
+      <button type="button" class="text-button" :disabled="searching || allCollapsed" @click="collapseAll">全部折叠</button>
+      <button type="button" class="text-button" :disabled="searching || !anyCollapsed" @click="expandAll">全部展开</button>
     </template>
   </div>
   <div v-if="!matchCount" class="empty-state tall">
