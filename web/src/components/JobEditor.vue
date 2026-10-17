@@ -40,9 +40,23 @@ const batchError = ref('');
 const nameTemplate = ref('{folder}');
 const canBatch = computed(() => !props.job && form.type === 'directory');
 const existingSources = computed(() => new Set((props.jobs ?? []).filter(job => job.type === 'directory').map(job => job.sourcePath)));
+// Batch tasks share a tag named after the parent folder so the list groups them together.
+const batchTag = (parentPath: string) => parentPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.trim().slice(0, 32) ?? '';
+let autoTag = '';
+function applyBatchTag() {
+  const tag = batchTag(form.sourcePath.trim());
+  if (!tag) return;
+  const index = form.tags.indexOf(autoTag);
+  // Only replace our own previous suggestion, so a tag the user typed is never overwritten.
+  if (index >= 0) form.tags.splice(index, 1, tag);
+  else if (!form.tags.length) form.tags.push(tag);
+  else return;
+  autoTag = tag;
+}
 async function loadBatchFolders() {
   batchFolders.value = []; batchSelected.value = []; batchError.value = '';
   if (!form.sourcePath.trim()) return;
+  applyBatchTag();
   batchLoading.value = true;
   try {
     const listing = await api<{ entries: { name: string; path: string; isDirectory: boolean }[] }>(`/sources?path=${encodeURIComponent(form.sourcePath.trim())}`);
