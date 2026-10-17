@@ -14,7 +14,7 @@ import { ApiError } from './api';
  * classifies, it never hides information.
  */
 const rules: readonly (readonly [RegExp, string])[] = [
-  [/didn't find section|no section|config (file )?not (found|exist)|rclone (is )?not configured/i, 'rclone 尚未配置,请先在「rclone 配置」导入配置文件'],
+  [/specify an existing|configuration file|didn't find section|no section|config (file )?(not|does not)|rclone (is )?not configured|no remotes? found/i, 'rclone 尚未配置,请先在「rclone 配置」导入有效的配置文件'],
   [/not found|no such file|does not exist|cannot find the (file|path)|404/i, '远端路径不存在,请返回上一级或选择其他目录'],
   [/permission denied|EACCES|access is denied/i, '没有访问权限,请检查目录或配置文件的权限'],
   [/connection refused|ECONNREFUSED|ECONNRESET|timeout|timed out|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|network/i, '无法连接到远端服务,请检查网络或稍后重试'],

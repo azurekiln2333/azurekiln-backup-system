@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { ArrowUp, Check, Folder, FolderPlus, HardDrive, RefreshCw } from 'lucide-vue-next';
 import Modal from './Modal.vue';
 import { api, errorMessage, write } from '../api';
+import { friendlyError, rawError } from '../errors';
 const props = defineProps<{ kind: 'source' | 'remote'; remote?: string; initialPath?: string }>();
 const emit = defineEmits<{ close: []; select: [path: string] }>();
 const path = ref(props.initialPath ?? '');
@@ -10,11 +11,12 @@ const roots = ref<string[]>([]);
 const entries = ref<{ name: string; path: string; isDirectory?: boolean }[]>([]);
 const loading = ref(false);
 const error = ref('');
+const errorDetail = ref('');
 const newDirectory = ref('');
 type RemoteEntry = { name: string; path: string };
 const remoteUrl = (value: string) => `/rclone/directories?remote=${encodeURIComponent(props.remote ?? '')}&path=${encodeURIComponent(value)}`;
 async function load(value = path.value) {
-  loading.value = true; error.value = '';
+  loading.value = true; error.value = ''; errorDetail.value = '';
   try {
     if (props.kind === 'source') {
       const data = await api<{ roots: string[]; path: string | null; entries: { name: string; path: string; isDirectory: boolean }[] }>(`/sources${value ? `?path=${encodeURIComponent(value)}` : ''}`);
@@ -23,7 +25,12 @@ async function load(value = path.value) {
       entries.value = await api<RemoteEntry[]>(remoteUrl(value));
       path.value = value;
     }
-  } catch (cause) { error.value = errorMessage(cause); }
+  } catch (cause) {
+    // A failed read must not also render an "empty directory" state below it.
+    entries.value = [];
+    error.value = friendlyError(cause, '无法读取目录');
+    errorDetail.value = rawError(cause);
+  }
   finally { loading.value = false; }
 }
 function parent() {
@@ -36,7 +43,7 @@ async function mkdir() {
   try {
     await write('/rclone/directories', { remote: props.remote, path: [path.value, newDirectory.value.trim()].filter(Boolean).join('/') });
     newDirectory.value = ''; await load();
-  } catch (cause) { error.value = errorMessage(cause); }
+  } catch (cause) { error.value = friendlyError(cause, '新建目录失败'); errorDetail.value = rawError(cause); }
 }
 void load();
 </script>
@@ -44,7 +51,10 @@ void load();
 <template>
   <Modal :title="kind === 'source' ? '选择源目录' : `选择远端目录 · ${remote}`" @close="emit('close')">
     <div class="modal-body picker-body">
-      <div v-if="error" class="notice error" role="alert">{{ error }}</div>
+      <div v-if="error" class="notice error" role="alert" :title="errorDetail || undefined">
+        <span>{{ error }}</span>
+        <button class="button secondary small" type="button" @click="load()">重试</button>
+      </div>
       <form class="path-toolbar" @submit.prevent="load()">
         <button class="icon-button" type="button" title="上一级" aria-label="上一级" :disabled="!path || loading" @click="parent"><ArrowUp :size="18" /></button>
         <input v-model="path" aria-label="当前目录" placeholder="根目录" :disabled="loading" />
@@ -56,9 +66,10 @@ void load();
           <div v-else-if="kind === 'source' && !path && roots.length" key="roots" class="picker-rows">
             <button v-for="root in roots" :key="root" @click="load(root)"><HardDrive :size="18" /><span class="mono">{{ root }}</span></button>
           </div>
+          <div v-else-if="error" key="error" class="picker-empty">无法读取此位置,请返回上一级或重试</div>
           <div v-else key="entries" class="picker-rows">
             <button v-for="entry in entries" :key="entry.path" @click="load(entry.path)"><Folder :size="18" /><span>{{ entry.name }}</span></button>
-            <div v-if="!entries.length" class="picker-empty">{{ error ? '目录不可用' : '没有子目录' }}</div>
+            <div v-if="!entries.length" class="picker-empty">没有子目录</div>
           </div>
         </Transition>
       </div>
