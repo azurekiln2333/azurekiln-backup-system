@@ -2,12 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   Activity, Archive as ArchiveIcon, ArrowRight, Check, CheckCircle2, ChevronRight, CircleAlert, Clock3,
-  Database, Download, FileArchive, Folder, FolderOpen, HardDrive, LayoutDashboard, LogOut, Menu, Moon, Play,
+  Database, Download, FileArchive, Folder, HardDrive, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Play,
   Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Trash2, Pencil, X,
 } from 'lucide-vue-next';
 import { api, ApiError, errorMessage, setCsrfToken, uploadArchive, write } from './api';
 import { bytes, dateTime, duration, phaseLabels, progress, shortTime, statusLabels } from './format';
+import { isPage, navItems, pageTitle, type Page } from './nav';
 import type { Archive, AuthStatus, Job, Overview, Run, ToolStatus } from './types';
+import AccountMenu from './components/AccountMenu.vue';
 import JobEditor from './components/JobEditor.vue';
 import FileManagerView from './components/FileManagerView.vue';
 import Modal from './components/Modal.vue';
@@ -15,17 +17,13 @@ import RunDetail from './components/RunDetail.vue';
 import SettingsView from './components/SettingsView.vue';
 import StorageView from './components/StorageView.vue';
 
-const navItems = [
-  { id: 'overview', label: '备份概览', icon: LayoutDashboard },
-  { id: 'jobs', label: '备份任务', icon: Folder },
-  { id: 'files', label: '文件管理', icon: FolderOpen },
-  { id: 'runs', label: '执行记录', icon: Activity },
-  { id: 'storage', label: '远端存储', icon: HardDrive },
-  { id: 'settings', label: '系统设置', icon: Settings2 },
-];
-type Page = 'overview' | 'jobs' | 'files' | 'runs' | 'storage' | 'settings';
-function currentPage(): Page { const hash = window.location.hash.slice(1); return navItems.some(item => item.id === hash) ? hash as Page : 'overview'; }
+/** Hash router: the registry is the only place a page is declared. */
+function currentPage(): Page { const hash = window.location.hash.slice(1); return isPage(hash) ? hash : 'overview'; }
 const page = ref<Page>(currentPage());
+const title = computed(() => pageTitle(page.value));
+const SIDEBAR_KEY = 'backup-sidebar-collapsed';
+function readCollapsed() { try { return localStorage.getItem(SIDEBAR_KEY) === '1'; } catch { return false; } }
+const collapsed = ref(readCollapsed());
 const mobileNav = ref(false);
 const theme = ref(localStorage.getItem('backup-theme') ?? 'light');
 const auth = ref<AuthStatus>();
@@ -70,7 +68,6 @@ const toast = ref('');
 let toastTimer: number;
 let pollTimer: number;
 let runsRequest = 0;
-const title = computed(() => navItems.find(item => item.id === page.value)?.label ?? '备份概览');
 const tagFilter = ref('');
 const allTags = computed(() => [...new Set(jobs.value.flatMap(job => job.tags ?? []))].sort((a, b) => a.localeCompare(b)));
 watch(allTags, tags => { if (tagFilter.value && !tags.includes(tagFilter.value)) tagFilter.value = ''; });
@@ -108,6 +105,8 @@ function notify(message: string) {
 }
 function navigate(id: string) { page.value = id as Page; window.location.hash = id; mobileNav.value = false; }
 function hashChange() { page.value = currentPage(); }
+function toggleCollapsed() { collapsed.value = !collapsed.value; }
+watch(collapsed, value => { try { localStorage.setItem(SIDEBAR_KEY, value ? '1' : '0'); } catch { /* private mode: ignore */ } });
 function toggleTheme() { theme.value = theme.value === 'dark' ? 'light' : 'dark'; }
 watch(theme, value => { document.documentElement.dataset.theme = value; localStorage.setItem('backup-theme', value); }, { immediate: true });
 async function refreshAuth() {
@@ -258,24 +257,23 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
     </section>
     <div class="auth-footer">AzureKiln <span>·</span> Backup System</div>
   </main>
-  <div v-else class="app-shell">
+  <div v-else class="app-shell" :class="{ 'sidebar-collapsed': collapsed }">
     <div v-if="mobileNav" class="nav-scrim" @click="mobileNav = false" />
-    <aside class="sidebar" :class="{ open: mobileNav }">
-      <a class="brand" href="#overview" @click="navigate('overview')"><img src="/brand.svg" alt="" width="35" height="35" /><div><strong>AzureKiln</strong><span>Backup System</span></div></a>
-      <div class="sidebar-label">工作空间</div>
-      <nav class="main-nav" aria-label="主导航"><button v-for="item in navItems" :key="item.id" :class="{ active: page === item.id }" @click="navigate(item.id)"><component :is="item.icon" :size="19" /><span>{{ item.label }}</span><span v-if="item.id === 'jobs' && jobs.length" class="nav-count">{{ jobs.length }}</span></button></nav>
-      <div class="sidebar-bottom"><div class="admin-avatar">{{ auth.user?.username.slice(0, 1).toUpperCase() || 'A' }}</div><div class="admin-info"><strong>{{ auth.user?.username }}</strong><span>管理员</span></div><button class="icon-button" title="退出登录" aria-label="退出登录" @click="logout"><LogOut :size="18" /></button></div>
+    <aside class="sidebar" :class="{ open: mobileNav, collapsed }">
+      <a class="brand" href="#overview" :title="collapsed ? 'AzureKiln Backup System' : undefined" @click="navigate('overview')"><img src="/brand.svg" alt="" width="35" height="35" /><div><strong>AzureKiln</strong><span>Backup System</span></div></a>
+      <nav class="main-nav" aria-label="主导航"><button v-for="item in navItems" :key="item.id" :class="{ active: page === item.id }" :title="collapsed ? item.label : undefined" @click="navigate(item.id)"><component :is="item.icon" :size="19" /><span>{{ item.label }}</span><span v-if="item.badge === 'jobs' && jobs.length" class="nav-count">{{ jobs.length }}</span></button></nav>
+      <button class="sidebar-collapse" type="button" :title="collapsed ? '展开导航' : '收起导航'" :aria-label="collapsed ? '展开导航' : '收起导航'" @click="toggleCollapsed"><PanelLeftOpen v-if="collapsed" :size="18" /><PanelLeftClose v-else :size="18" /><span>收起导航</span></button>
     </aside>
     <div class="workspace">
-      <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" title="打开导航" aria-label="打开导航" @click="mobileNav = !mobileNav"><Menu :size="21" /></button><span class="workspace-label">管理控制台</span><ChevronRight :size="14" /><strong>{{ title }}</strong></div><div class="topbar-actions"><span class="live-indicator"><i />{{ activeRuns.length ? `${activeRuns.length} 个执行中` : '系统在线' }}</span><button class="icon-button" :title="theme === 'dark' ? '浅色主题' : '深色主题'" :aria-label="theme === 'dark' ? '浅色主题' : '深色主题'" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="19" /><Moon v-else :size="19" /></button></div></header>
+      <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" title="打开导航" aria-label="打开导航" @click="mobileNav = !mobileNav"><Menu :size="21" /></button><span class="workspace-label">管理控制台</span></div><div class="topbar-actions"><span class="live-indicator"><i />{{ activeRuns.length ? `${activeRuns.length} 个执行中` : '系统在线' }}</span><button class="icon-button" :title="theme === 'dark' ? '浅色主题' : '深色主题'" :aria-label="theme === 'dark' ? '浅色主题' : '深色主题'" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="19" /><Moon v-else :size="19" /></button><AccountMenu :username="auth.user?.username" :theme="theme" @toggle-theme="toggleTheme" @logout="logout" /></div></header>
       <main class="main-content">
-        <header class="page-heading"><div><div class="page-eyebrow">{{ page === 'overview' ? 'WORKSPACE' : page === 'jobs' ? 'BACKUP JOBS' : page === 'files' ? 'SOURCE FILES' : page === 'runs' ? 'EXECUTION HISTORY' : page === 'storage' ? 'REMOTE STORAGE' : 'PREFERENCES' }}</div><h1>{{ title }}</h1></div><div class="heading-actions"><button v-if="['overview','jobs','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
+        <header class="page-heading"><h1>{{ title }}</h1><div class="heading-actions"><button v-if="['overview','jobs','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
         <div v-if="error" class="notice error" role="alert">{{ error }}<button class="icon-button" title="关闭错误提示" aria-label="关闭错误提示" @click="error = ''"><X :size="16" /></button></div>
         <div v-if="!loaded && ['overview','jobs','runs'].includes(page)" class="loading-line">正在读取备份数据…</div>
         <template v-else-if="page === 'overview'">
           <section class="metrics" aria-label="备份统计"><div class="metric"><div><span>备份任务</span><Folder :size="19" /></div><strong>{{ overview?.totalJobs ?? 0 }}<small>个</small></strong><p>{{ overview?.enabledJobs ?? 0 }} 个已启用</p></div><div class="metric"><div><span>正在执行</span><Activity :size="19" /></div><strong>{{ activeRuns.length }}<small>个</small></strong><p>{{ activeRuns.length ? '备份进行中' : '队列空闲' }}</p></div><div class="metric"><div><span>最近成功</span><CheckCircle2 :size="19" /></div><strong class="date-value">{{ overview?.lastSuccessAt ? shortTime(overview.lastSuccessAt) : '—' }}</strong><p>{{ overview?.lastSuccessAt ? '最近一次成功备份' : '暂无成功记录' }}</p></div><div class="metric"><div><span>临时空间</span><FileArchive :size="19" /></div><strong>{{ bytes(overview?.storage.tempBytes ?? 0) }}</strong><p>{{ overview?.storage.maxTempBytes ? `上限 ${bytes(overview.storage.maxTempBytes)}` : '—' }}</p></div></section>
           <section v-if="activeRuns.length" class="page-band active-section"><div class="section-heading"><h2>当前执行</h2><span class="status running"><i />{{ activeRuns.length }} 个任务</span></div><button v-for="run in activeRuns" :key="run.id" class="active-run" @click="selectedRun = run.id"><div class="run-symbol"><RefreshCw :size="20" class="spinning" /></div><div><strong>{{ run.jobName }}</strong><span>{{ phaseLabels[run.phase] || run.phase }}<template v-if="liveProgress(run)"> · {{ liveProgress(run) }}</template></span></div><ChevronRight :size="19" /></button></section>
-          <div class="overview-columns"><section class="page-band"><div class="section-heading"><h2>备份任务 <span class="count">{{ jobs.length }}</span></h2><button class="text-button" @click="navigate('jobs')">全部任务<ArrowRight :size="15" /></button></div><div v-if="!jobs.length" class="empty-state"><div class="empty-symbol"><Folder :size="31" /></div><h3>尚无备份任务</h3><div class="empty-actions"><button class="button secondary" @click="createJob('directory')"><Plus :size="16" />目录备份</button><button class="button secondary" @click="createJob('vaultwarden')"><Database :size="16" />Vaultwarden</button></div></div><div v-else class="overview-job-list"><div v-for="job in jobs.slice(0, 6)" :key="job.id" class="overview-job"><button class="job-primary" @click="openJob(job)"><div class="job-symbol" :class="job.type"><Settings2 v-if="job.type === 'system'" :size="20" /><Database v-else-if="job.type === 'vaultwarden'" :size="20" /><Folder v-else :size="20" /></div><div><strong>{{ job.name }}</strong><span class="mono">{{ sourcePath(job) }}</span><span v-if="job.description" :title="job.description">{{ job.description }}</span></div></button><span class="status" :class="job.lastRun?.status ?? (job.enabled ? 'pending' : 'disabled')">{{ job.lastRun ? statusLabels[job.lastRun.status] : job.enabled ? '尚未执行' : '已暂停' }}</span><button class="icon-button" title="立即备份" aria-label="立即备份" :disabled="busyId === job.id || activeJob(job.id) || !canRunJob(job)" @click="runJob(job)"><Play :size="17" /></button></div></div></section><section class="page-band environment-section"><div class="section-heading"><h2>运行环境</h2><button class="text-button" @click="navigate('storage')">存储<ArrowRight :size="15" /></button></div><div v-for="tool in tools" :key="tool.key" class="tool-row"><span>{{ tool.label }}</span><span :class="tool.available ? 'text-success' : 'muted'"><Check v-if="tool.available" :size="14" /><CircleAlert v-else :size="14" />{{ tool.available ? '可用' : '未安装' }}</span></div><div class="environment-footer"><ShieldCheck :size="16" /><span>管理员会话已验证</span></div></section></div>
+          <div class="overview-columns"><section class="page-band"><div class="section-heading"><h2>备份任务 <span class="count">{{ jobs.length }}</span></h2><button class="text-button" @click="navigate('jobs')">全部任务<ArrowRight :size="15" /></button></div><div v-if="!jobs.length" class="empty-state"><div class="empty-symbol"><Folder :size="31" /></div><h3>尚无备份任务</h3><div class="empty-actions"><button class="button secondary" @click="createJob('directory')"><Plus :size="16" />目录备份</button><button class="button secondary" @click="createJob('vaultwarden')"><Database :size="16" />Vaultwarden</button></div></div><div v-else class="overview-job-list"><div v-for="job in jobs.slice(0, 6)" :key="job.id" class="overview-job"><button class="job-primary" @click="openJob(job)"><div class="job-symbol" :class="job.type"><Settings2 v-if="job.type === 'system'" :size="20" /><Database v-else-if="job.type === 'vaultwarden'" :size="20" /><Folder v-else :size="20" /></div><div><strong>{{ job.name }}</strong><span class="mono">{{ sourcePath(job) }}</span><span v-if="job.description" :title="job.description">{{ job.description }}</span></div></button><span class="status" :class="job.lastRun?.status ?? (job.enabled ? 'pending' : 'disabled')">{{ job.lastRun ? statusLabels[job.lastRun.status] : job.enabled ? '尚未执行' : '已暂停' }}</span><button class="icon-button" title="立即备份" aria-label="立即备份" :disabled="busyId === job.id || activeJob(job.id) || !canRunJob(job)" @click="runJob(job)"><Play :size="17" /></button></div></div></section><section class="page-band environment-section"><div class="section-heading"><h2>运行环境</h2><button class="text-button" @click="navigate('storage')">存储<ArrowRight :size="15" /></button></div><div v-for="tool in tools" :key="tool.key" class="tool-row"><span>{{ tool.label }}</span><span :class="tool.available ? 'text-success' : 'muted'"><Check v-if="tool.available" :size="14" /><CircleAlert v-else :size="14" />{{ tool.available ? '可用' : '未安装' }}</span></div></section></div>
           <section class="page-band"><div class="section-heading"><h2>最近执行</h2><button class="text-button" @click="navigate('runs')">全部记录<ArrowRight :size="15" /></button></div><div v-if="!recentRuns.length" class="empty-state compact"><Clock3 :size="28" /><h3>暂无执行记录</h3></div><div v-else class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>执行时间</th><th>归档大小</th><th>耗时</th><th class="action-column"></th></tr></thead><tbody><tr v-for="run in recentRuns" :key="run.id"><td><button class="table-link" @click="selectedRun = run.id">{{ run.jobName }}</button></td><td><span class="status" :class="run.status"><i />{{ statusLabels[run.status] }}</span></td><td class="nowrap">{{ shortTime(run.createdAt) }}</td><td>{{ bytes(run.archiveBytes) }}</td><td class="nowrap">{{ duration(run) }}</td><td><button class="icon-button" title="查看执行详情" aria-label="查看执行详情" @click="selectedRun = run.id"><ChevronRight :size="17" /></button></td></tr></tbody></table></div></section>
         </template>
         <template v-else-if="page === 'jobs'">
@@ -292,7 +290,6 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
         <FileManagerView v-else-if="page === 'files'" @create-job="source => createJob('directory', source)" />
         <StorageView v-else-if="page === 'storage'" @message="notify" />
         <SettingsView v-else-if="page === 'settings'" @message="notify" @saved="settingsSaved" />
-        <footer class="workspace-footer"><span>AzureKiln Backup</span><span>© {{ new Date().getFullYear() }} AzureKiln</span></footer>
       </main>
     </div>
   </div>

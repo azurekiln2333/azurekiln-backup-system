@@ -496,6 +496,7 @@ try {
   await page.getByRole('button', { name: 'directory-a', exact: true }).click();
   await page.getByText('important.txt', { exact: true }).waitFor();
   await screenshot('desktop-dark-files');
+  await page.getByRole('button', { name: '账号菜单 admin' }).click();
   await page.getByRole('button', { name: '退出登录' }).click();
   await page.getByRole('heading', { name: '管理员登录' }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });

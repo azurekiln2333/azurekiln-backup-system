@@ -48,7 +48,7 @@ onBeforeUnmount(() => {
       <ChevronDown :size="15" class="account-caret" :class="{ open }" />
     </button>
     <Transition name="account-pop">
-      <div v-if="open" class="account-menu" role="menu" :aria-label="`账号菜单 ${username ?? '管理员'}`">
+      <div v-if="open" class="account-menu" role="group" :aria-label="`账号菜单 ${username ?? '管理员'}`">
         <div class="account-identity">
           <span class="avatar" aria-hidden="true">{{ (username ?? 'A').slice(0, 1).toUpperCase() }}</span>
           <div>
@@ -56,13 +56,13 @@ onBeforeUnmount(() => {
             <span>管理员</span>
           </div>
         </div>
-        <button type="button" role="menuitem" @click="emit('toggle-theme')">
+        <button type="button" @click="emit('toggle-theme')">
           <Sun v-if="theme === 'dark'" :size="16" />
           <Moon v-else :size="16" />
           {{ theme === 'dark' ? '浅色主题' : '深色主题' }}
         </button>
         <div class="account-divider" role="separator" />
-        <button type="button" role="menuitem" class="account-signout" @click="emit('logout')">
+        <button type="button" class="account-signout" @click="emit('logout')">
           <LogOut :size="16" />
           退出登录
         </button>
