@@ -64,6 +64,10 @@ With `SOURCE_ROOTS=/sources`, both directories are visible. To allow only those 
 
 ## Backup behavior
 
+Tasks can carry up to 10 tags (for example `mysql` or `production`). The task list filters by tag, clicking a tag under a task filters by it, and search also matches tags.
+
+When creating a directory task, tick **Batch add** to pick a parent folder instead. Its subfolders are listed; each selected one becomes its own task with otherwise identical settings. Task names come from a template in which `{folder}` is the subfolder name, and every destination uploads to `save directory/subfolder`. For a parent `/sources/mysql` holding `blog_azurekiln_cn` and `azurekiln_cn` with save directory `backups/mysql`, two tasks are created that upload to `backups/mysql/blog_azurekiln_cn` and `backups/mysql/azurekiln_cn`. Subfolders that already have a task cannot be selected, and if any folder fails validation, nothing is created. The resulting tasks are independent; change them one at a time.
+
 Directory tasks can enable file-change watching under **Schedule and Notifications**. Watching is off by default and covers the selected directory recursively. Changes are grouped for a configurable 1–300 seconds (five seconds by default) before a full backup version is created. Changes during an active backup trigger one more run after it finishes. Exclusions also apply to watch events. Pausing or deleting a task, or disabling watching, stops its watcher. Vaultwarden and system-configuration tasks do not support this option. Task details show watcher status and errors.
 
 Watching depends on operating-system file events. Network filesystems, some container mounts, and temporary source outages can miss events. The service periodically attempts to reconnect, but cannot recover every change made while disconnected. Use a schedule as an additional safeguard for important data. Increase the grouping interval for frequently changing large directories. The **File watching** switch in the task list turns watching on or off directly while keeping the watch mode and grouping interval.
