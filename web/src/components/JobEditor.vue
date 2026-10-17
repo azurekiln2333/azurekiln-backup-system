@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref, toRaw, watch } from 'vue';
-import { Database, Eye, EyeOff, Folder, FolderOpen, HardDrive, LockKeyhole, Plus, Save, Trash2 } from 'lucide-vue-next';
-import { jobSchema, newJob } from '../../../shared/contracts.mjs';
+import { Database, Eye, EyeOff, Folder, FolderOpen, HardDrive, LockKeyhole, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next';
+import { batchJobSchema, jobSchema, newJob } from '../../../shared/contracts.mjs';
 import type { Job, JobInput, Remote } from '../types';
 import { api, errorMessage, write } from '../api';
 import Modal from './Modal.vue';
 import PathPicker from './PathPicker.vue';
-const props = defineProps<{ job?: Job; initialType?: 'directory' | 'vaultwarden'; initialSourcePath?: string }>();
-const emit = defineEmits<{ close: []; saved: [job: Job] }>();
+const props = defineProps<{ job?: Job; jobs?: Job[]; initialType?: 'directory' | 'vaultwarden'; initialSourcePath?: string }>();
+const emit = defineEmits<{ close: []; saved: [job: Job]; batchSaved: [jobs: Job[]] }>();
 const form = reactive<JobInput>(structuredClone(props.job ? toRaw(props.job) : newJob(props.initialType ?? 'directory')));
 form.archive.folderTemplate ??= '{datetime}';
 form.archive.fileTemplate ??= '{task}';
@@ -16,6 +16,47 @@ form.archive.threads ??= 0;
 form.archive.dictionaryMiB ??= 0;
 form.watch ??= { enabled: false, mode: 'full', debounceSeconds: 5 };
 form.watch.mode ??= 'full';
+form.tags ??= [];
+const tagDraft = ref('');
+const knownTags = computed(() => [...new Set((props.jobs ?? []).flatMap(job => job.tags ?? []))].filter(tag => !form.tags.some(item => item.toLowerCase() === tag.toLowerCase())).sort());
+function addTags(text = tagDraft.value) {
+  for (const raw of text.split(/[,，\n]/)) {
+    const tag = raw.trim().slice(0, 32);
+    if (tag && form.tags.length < 10 && !form.tags.some(item => item.toLowerCase() === tag.toLowerCase())) form.tags.push(tag);
+  }
+  tagDraft.value = '';
+}
+function tagKey(event: KeyboardEvent) {
+  if (event.isComposing) return;
+  if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTags(); }
+  else if (event.key === 'Backspace' && !tagDraft.value && form.tags.length) form.tags.pop();
+}
+// Batch mode: sourcePath is the parent folder and each selected child folder becomes its own task.
+const batch = ref(false);
+const batchFolders = ref<{ name: string; path: string; exists: boolean }[]>([]);
+const batchSelected = ref<string[]>([]);
+const batchLoading = ref(false);
+const batchError = ref('');
+const nameTemplate = ref('{folder}');
+const canBatch = computed(() => !props.job && form.type === 'directory');
+const existingSources = computed(() => new Set((props.jobs ?? []).filter(job => job.type === 'directory').map(job => job.sourcePath)));
+async function loadBatchFolders() {
+  batchFolders.value = []; batchSelected.value = []; batchError.value = '';
+  if (!form.sourcePath.trim()) return;
+  batchLoading.value = true;
+  try {
+    const listing = await api<{ entries: { name: string; path: string; isDirectory: boolean }[] }>(`/sources?path=${encodeURIComponent(form.sourcePath.trim())}`);
+    batchFolders.value = listing.entries.filter(entry => entry.isDirectory).map(entry => ({ ...entry, exists: existingSources.value.has(entry.path) }));
+    batchSelected.value = batchFolders.value.filter(folder => !folder.exists).map(folder => folder.name);
+  } catch (cause) { batchError.value = errorMessage(cause); }
+  finally { batchLoading.value = false; }
+}
+watch(batch, enabled => { if (enabled) void loadBatchFolders(); });
+const batchPreview = computed(() => {
+  const folder = batchFolders.value.find(item => batchSelected.value.includes(item.name))?.name;
+  return folder ? { folder, name: nameTemplate.value.replaceAll('{folder}', folder) } : null;
+});
+const batchDestination = (base: string, folder: string) => [base.replace(/\/+$/, ''), folder].filter(Boolean).join('/');
 if (!props.job && props.initialSourcePath) form.sourcePath = props.initialSourcePath;
 const tabs = ['基本信息', '目标位置', '压缩与保留', '计划与通知'];
 const tab = ref(0);
@@ -53,8 +94,10 @@ async function loadRemotes() {
   catch (cause) { remoteError.value = errorMessage(cause); }
 }
 function selectSource(path: string) {
-  if (sourcePicker.value === 'sourcePath') form.sourcePath = path;
-  else if (sourcePicker.value) form.vaultwarden[sourcePicker.value] = path;
+  if (sourcePicker.value === 'sourcePath') {
+    form.sourcePath = path;
+    if (batch.value) void loadBatchFolders();
+  } else if (sourcePicker.value) form.vaultwarden[sourcePicker.value] = path;
   sourcePicker.value = null;
 }
 function addDestination() { form.destinations.push({ remote: '', path: '' }); }
@@ -66,6 +109,15 @@ function showError(message: string, targetTab = tab.value) {
 async function save() {
   error.value = '';
   form.excludes = excludes.value.split('\n').map(value => value.trim()).filter(Boolean);
+  if (tagDraft.value.trim()) addTags();
+  const batchMode = batch.value && canBatch.value;
+  if (batchMode) {
+    if (!form.sourcePath.trim()) { showError('请选择父目录', 0); return; }
+    if (!batchSelected.value.length) { showError('请至少选择一个子目录', 0); return; }
+    if (!nameTemplate.value.includes('{folder}')) { showError('任务名称模板必须包含 {folder}', 0); return; }
+    // Validate the shared settings with the first folder standing in for every generated task.
+    form.name = nameTemplate.value.replaceAll('{folder}', batchPreview.value?.folder ?? batchSelected.value[0]!);
+  }
   if (!form.name.trim()) { showError('请输入任务名称', 0); return; }
   if (form.type === 'directory' && !form.sourcePath.trim()) { showError('请选择源目录', 0); return; }
   if (form.type === 'vaultwarden' && !form.vaultwarden.dataDir.trim()) { showError('请选择 Vaultwarden 数据目录', 0); return; }
@@ -82,25 +134,43 @@ async function save() {
     return;
   }
   saving.value = true;
-  try { emit('saved', await write<Job>(props.job ? `/jobs/${props.job.id}` : '/jobs', parsed.data, props.job ? 'PATCH' : 'POST')); }
-  catch (cause) { showError(errorMessage(cause)); }
+  try {
+    if (batchMode) {
+      const folders = batchFolders.value.filter(folder => batchSelected.value.includes(folder.name)).map(folder => folder.name);
+      const request = batchJobSchema.safeParse({ parentPath: form.sourcePath.trim(), folders, nameTemplate: nameTemplate.value, template: parsed.data });
+      if (!request.success) { showError(request.error.issues.map(issue => issue.message).join('；'), 0); return; }
+      emit('batchSaved', await write<Job[]>('/jobs/batch', request.data));
+    } else emit('saved', await write<Job>(props.job ? `/jobs/${props.job.id}` : '/jobs', parsed.data, props.job ? 'PATCH' : 'POST'));
+  } catch (cause) { showError(errorMessage(cause)); }
   finally { saving.value = false; }
 }
 void loadRemotes();
 </script>
 
 <template>
-  <Modal :title="job ? `编辑任务 · ${job.name}` : '新建备份任务'" wide @close="emit('close')">
+  <Modal :title="job ? `编辑任务 · ${job.name}` : batch && canBatch ? '批量添加目录任务' : '新建备份任务'" wide @close="emit('close')">
     <form novalidate @submit.prevent="save">
       <nav class="dialog-tabs" aria-label="任务设置"><button v-for="(label, index) in tabs" :key="label" type="button" :class="{ active: tab === index }" @click="tab = index">{{ label }}</button></nav>
       <div class="modal-body editor-body">
         <div v-if="error && tab === errorTab" class="notice error" role="alert">{{ error }}</div>
         <section v-show="tab === 0" class="form-section">
           <div class="form-grid">
-            <label class="field full">任务名称<input v-model="form.name" maxlength="100" placeholder="任务名称" /></label>
+            <label v-if="canBatch" class="check-row full"><input v-model="batch" type="checkbox" />批量添加：为父目录下的每个子目录各建一个任务</label>
+            <label v-if="batch && canBatch" class="field full">任务名称模板<input v-model="nameTemplate" maxlength="100" placeholder="{folder}" title="{folder} 会替换为子目录名" /></label>
+            <label v-else class="field full">任务名称<input v-model="form.name" maxlength="100" placeholder="任务名称" /></label>
             <label class="field full">任务描述<textarea v-model="form.description" maxlength="500" rows="3" placeholder="可选" /></label>
-            <div v-if="form.type !== 'system'" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button></div></div>
-            <label v-if="form.type === 'directory'" class="field full">源目录<div class="input-action"><input v-model="form.sourcePath" placeholder="/sources/data" /><button type="button" class="icon-button" title="浏览源目录" aria-label="浏览源目录" @click="sourcePicker = 'sourcePath'"><FolderOpen :size="18" /></button></div></label>
+            <div class="field full"><span>标签</span><div class="tag-input"><span v-for="(tag, index) in form.tags" :key="tag" class="tag-chip">{{ tag }}<button type="button" :title="`移除标签 ${tag}`" :aria-label="`移除标签 ${tag}`" @click="form.tags.splice(index, 1)"><X :size="11" /></button></span><input v-model="tagDraft" list="job-tag-suggestions" aria-label="添加标签" :placeholder="form.tags.length ? '' : '例如 mysql，回车添加'" :disabled="form.tags.length >= 10" maxlength="32" @keydown="tagKey" @blur="addTags()" /></div><datalist id="job-tag-suggestions"><option v-for="tag in knownTags" :key="tag" :value="tag" /></datalist></div>
+            <div v-if="form.type !== 'system' && !(batch && canBatch)" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button></div></div>
+            <label v-if="form.type === 'directory'" class="field full">{{ batch && canBatch ? '父目录' : '源目录' }}<div class="input-action"><input v-model="form.sourcePath" placeholder="/sources/data" @change="batch && canBatch && loadBatchFolders()" /><button type="button" class="icon-button" title="浏览源目录" aria-label="浏览源目录" @click="sourcePicker = 'sourcePath'"><FolderOpen :size="18" /></button></div></label>
+            <div v-if="batch && canBatch" class="field full">
+              <div class="batch-toolbar"><span>子目录（已选 {{ batchSelected.length }} / {{ batchFolders.length }}）</span><div><button type="button" class="text-button" :disabled="!batchFolders.length" @click="batchSelected = batchFolders.filter(folder => !folder.exists).map(folder => folder.name)">全选</button><button type="button" class="text-button" :disabled="!batchSelected.length" @click="batchSelected = []">全不选</button><button type="button" class="icon-button" title="重新读取子目录" aria-label="重新读取子目录" :disabled="batchLoading || !form.sourcePath.trim()" @click="loadBatchFolders"><RefreshCw :size="16" :class="{ spinning: batchLoading }" /></button></div></div>
+              <div v-if="batchError" class="notice error">{{ batchError }}</div>
+              <div v-else-if="batchLoading" class="loading-line">正在读取子目录…</div>
+              <div v-else-if="!form.sourcePath.trim()" class="muted">先选择父目录</div>
+              <div v-else-if="!batchFolders.length" class="muted">该目录下没有子目录</div>
+              <div v-else class="batch-folders"><label v-for="folder in batchFolders" :key="folder.path" class="check-row"><input v-model="batchSelected" type="checkbox" :value="folder.name" :disabled="folder.exists" /><span class="mono">{{ folder.name }}</span><span v-if="folder.exists" class="muted">已有任务</span></label></div>
+              <p v-if="batchPreview" class="muted">示例：{{ batchPreview.folder }} → 任务「{{ batchPreview.name }}」，上传到每个目标的「保存目录/{{ batchPreview.folder }}」。其他设置全部相同。</p>
+            </div>
             <template v-else-if="form.type === 'vaultwarden'">
               <label class="field full">Vaultwarden 数据目录<div class="input-action"><input v-model="form.vaultwarden.dataDir" placeholder="/sources/vaultwarden" /><button type="button" class="icon-button" title="浏览数据目录" aria-label="浏览数据目录" @click="sourcePicker = 'dataDir'"><FolderOpen :size="18" /></button></div></label>
               <label class="field full">数据库类型<select v-model="form.vaultwarden.dbType"><option value="sqlite">SQLite</option><option value="postgresql">PostgreSQL</option><option value="mysql">MySQL / MariaDB</option></select></label>
@@ -128,6 +198,7 @@ void loadRemotes();
         <section v-show="tab === 1" class="form-section">
           <div class="section-heading"><h3>同步目标</h3><button class="button secondary small" type="button" :disabled="form.destinations.length >= 10" @click="addDestination"><Plus :size="16" />添加目标</button></div>
           <div v-if="remoteError" class="notice warning">{{ remoteError }}<button type="button" class="text-button" @click="loadRemotes">重新读取</button></div>
+          <p v-if="batch && canBatch" class="muted">批量添加时，这里填父保存目录。每个任务上传到其下与源子目录同名的文件夹<template v-if="batchPreview && form.destinations[0]?.remote">，例如 {{ form.destinations[0].remote }}:{{ batchDestination(form.destinations[0].path, batchPreview.folder) }}</template>。</p>
           <div v-for="(destination, index) in form.destinations" :key="index" class="destination-editor">
             <div class="destination-title"><span><HardDrive :size="16" />目标 {{ index + 1 }}</span><button class="icon-button danger" type="button" title="删除目标" aria-label="删除目标" :disabled="form.destinations.length === 1" @click="form.destinations.splice(index, 1)"><Trash2 :size="16" /></button></div>
             <div class="form-grid">
@@ -181,7 +252,7 @@ void loadRemotes();
           <div class="check-stack"><label class="check-row"><input v-model="form.notification.start" type="checkbox" />执行开始</label><label class="check-row"><input v-model="form.notification.success" type="checkbox" />备份成功</label><label class="check-row"><input v-model="form.notification.failure" type="checkbox" />备份失败</label></div>
         </section>
       </div>
-      <footer class="modal-footer"><button class="button secondary" type="button" @click="emit('close')">取消</button><button class="button primary" :disabled="saving"><Save :size="16" />{{ saving ? '保存中…' : '保存任务' }}</button></footer>
+      <footer class="modal-footer"><button class="button secondary" type="button" @click="emit('close')">取消</button><button class="button primary" :disabled="saving"><Save :size="16" />{{ saving ? '保存中…' : batch && canBatch ? `创建 ${batchSelected.length} 个任务` : '保存任务' }}</button></footer>
     </form>
   </Modal>
   <PathPicker v-if="sourcePicker" kind="source" :initial-path="sourcePicker === 'sourcePath' ? form.sourcePath : form.vaultwarden[sourcePicker]" @close="sourcePicker = null" @select="selectSource" />
