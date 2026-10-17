@@ -8,7 +8,6 @@ import { batchJobSchema, jobSchema, settingsSchema } from '../shared/contracts.m
 import { AppError, isWithin, loadConfig, resolveSourcePath } from './config.mjs';
 import { createStore, mergeConfig, SYSTEM_JOB_ID } from './store.mjs';
 import { createAuth } from './auth.mjs';
-import { createTokens } from './tokens.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
 import { createWatcher } from './watcher.mjs';
 
@@ -90,7 +89,6 @@ export async function createApp(options = {}) {
   }
   const scheduler = options.scheduler || (await import('./scheduler.mjs')).createScheduler({ store, backupService });
   const watcher = options.watcher || createWatcher({ store, config, backupService });
-  const tokens = options.tokens || createTokens({ store, config });
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -99,7 +97,7 @@ export async function createApp(options = {}) {
   });
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
-  const auth = createAuth({ store, config, tokens });
+  const auth = createAuth({ store, config });
   app.use('/api', auth.identify);
   app.get('/api/auth/status', auth.status);
   app.post('/api/auth/setup', auth.checkOrigin, wrap(auth.setup));
@@ -107,14 +105,7 @@ export async function createApp(options = {}) {
   app.post('/api/auth/logout', auth.requireAuth, auth.checkOrigin, auth.csrf, auth.logout);
   app.get('/api/auth/oidc/start', wrap(auth.start));
   app.get('/api/auth/oidc/callback', wrap(auth.callback));
-  // Token management is mounted before the blanket guard so it is reachable only with an
-  // administrator session: a Bearer principal can never mint, edit, or revoke tokens.
-  app.use('/api/tokens', auth.requireSession, auth.checkOrigin, auth.csrf);
-  app.get('/api/tokens', (_req, res) => res.json(tokens.list()));
-  app.post('/api/tokens', wrap((req, res) => res.status(201).json(tokens.create(req.body))));
-  app.patch('/api/tokens/:id', wrap((req, res) => res.json(tokens.update(req.params.id, req.body))));
-  app.delete('/api/tokens/:id', wrap((req, res) => { tokens.remove(req.params.id); res.status(204).end(); }));
-  app.use('/api', auth.requireAuth, auth.tokenGuard, auth.checkOrigin, auth.csrf);
+  app.use('/api', auth.requireAuth, auth.checkOrigin, auth.csrf);
 
   const getJob = (id) => {
     const job = store.getJob(id);
@@ -321,7 +312,7 @@ export async function createApp(options = {}) {
   });
   scheduler.start();
   watcher.start();
-  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); tokens.close(); if (!options.store) store.close(); };
+  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); if (!options.store) store.close(); };
   return { app, store, config, backupService, rclone, scheduler, watcher, close };
 }
 
