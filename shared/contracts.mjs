@@ -16,6 +16,24 @@ const exclusionPattern = z.string().max(512).refine(
   'Use literal paths with * or ? wildcards; extended glob syntax is not supported.',
 );
 
+// Shared database connection block: Vaultwarden and new-api both point at an existing server.
+const databaseSchema = z.object({
+  host: z.string().default(''),
+  port: z.number().int().min(1).max(65535).optional(),
+  name: z.string().default(''),
+  username: z.string().default(''),
+  password: z.string().max(1024).optional(),
+  sslMode: z.enum(['default', 'disable', 'require', 'verify-ca', 'verify-full']).default('default'),
+  sslCa: z.string().default(''),
+  sslCert: z.string().default(''),
+  sslKey: z.string().default(''),
+});
+
+// Vaultwarden keeps its historical defaults so existing tasks and validation keep working.
+const vaultwardenDatabaseSchema = databaseSchema
+  .extend({ name: z.string().default('vaultwarden'), username: z.string().default('vaultwarden') })
+  .default({});
+
 // Tags are free-form labels for grouping tasks; duplicates are removed case-insensitively, keeping the first spelling.
 const tagList = z.array(z.string().trim().min(1).max(32).refine((value) => !/[,\r\n\0]/.test(value), '标签不能包含逗号或换行。'))
   .max(10).default([])
@@ -25,7 +43,7 @@ export const jobSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).default(''),
   tags: tagList,
-  type: z.enum(['directory', 'vaultwarden', 'system']).default('directory'),
+  type: z.enum(['directory', 'vaultwarden', 'system', 'newapi']).default('directory'),
   enabled: z.boolean().default(true),
   sourcePath: z.string().trim().default(''),
   destinations: z.array(destinationSchema).max(10).default([]),
@@ -72,17 +90,29 @@ export const jobSchema = z.object({
     rsaKeyPath: z.string().default(''),
     attachmentsPath: z.string().default(''),
     sendsPath: z.string().default(''),
-    database: z.object({
-      host: z.string().default(''),
-      port: z.number().int().min(1).max(65535).optional(),
-      name: z.string().default('vaultwarden'),
-      username: z.string().default('vaultwarden'),
-      password: z.string().max(1024).optional(),
-      sslMode: z.enum(['default', 'disable', 'require', 'verify-ca', 'verify-full']).default('default'),
-      sslCa: z.string().default(''),
-      sslCert: z.string().default(''),
-      sslKey: z.string().default(''),
-    }).default({}),
+    database: vaultwardenDatabaseSchema,
+  }).default({}),
+
+  // new-api keeps authoritative state in one main database plus an optional separate log database.
+  // Everything outside those databases (.env, compose, data dir) must travel with the archive too.
+  newapi: z.object({
+    dataDir: z.string().default(''),
+    dbType: z.enum(['sqlite', 'postgresql', 'mysql']).default('sqlite'),
+    sqlitePath: z.string().default(''),
+    // 'same' means LOG_SQL_DSN is unset, so the log tables live in the main database.
+    logDbType: z.enum(['same', 'sqlite', 'postgresql', 'mysql', 'clickhouse']).default('same'),
+    logSqlitePath: z.string().default(''),
+    database: databaseSchema.default({}),
+    logDatabase: databaseSchema.default({}),
+    envFilePath: z.string().default(''),
+    composeFilePath: z.string().default(''),
+    serviceFilePath: z.string().default(''),
+    proxyConfigPath: z.string().default(''),
+    pluginsPath: z.string().default(''),
+    includeLogs: z.boolean().default(false),
+    logsPath: z.string().default(''),
+    includeLogTable: z.boolean().default(true),
+    appVersion: z.string().default(''),
   }).default({}),
 });
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { jobSchema, settingsSchema } from '../shared/contracts.mjs';
 import { AppError } from './config.mjs';
 
-const jobSecrets = [['archive', 'password'], ['vaultwarden', 'database', 'password']];
+const jobSecrets = [['archive', 'password'], ['vaultwarden', 'database', 'password'], ['newapi', 'database', 'password'], ['newapi', 'logDatabase', 'password']];
 const settingsSecrets = [['smtp', 'password'], ['oidc', 'clientSecret'], ['rclone', 'configPassword']];
 export const SYSTEM_JOB_ID = 'system-config';
 const clone = (value) => structuredClone(value);
