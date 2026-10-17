@@ -61,6 +61,8 @@ export function validateNewApiJob(job, config, { allowMissing = false } = {}) {
   const api = job.newapi;
   const source = resolveSourcePath(config, api.dataDir || job.sourcePath, { directory: true, allowMissing });
   api.dataDir = source;
+  // job.sourcePath must mirror dataDir: the jobs list derives its "source" column and the
+  // "group by source parent" bucket from sourcePath for non-system tasks.
   job.sourcePath = source;
   const sqliteDefault = path.join(source, 'one-api.db');
   if (api.dbType === 'sqlite') {
