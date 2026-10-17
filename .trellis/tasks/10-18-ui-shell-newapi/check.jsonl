@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality check list that the check pass must run."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Console contracts to verify against: single source of truth for state, no duplicated metrics, error/empty-state matrix, browser anchors that must not break."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/prd.md", "reason": "Acceptance criteria to check one by one (radius tokens, sidebar cleanup, single page title, storage 'not found', unchanged palette, green checks)."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/design.md", "reason": "Intended radius mapping table and shell structure, so the reviewer can detect deviations."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/implement.md", "reason": "Validation gates and commit slicing the check pass must confirm."}
+{"file": ".trellis/tasks/10-18-ui-revamp-newapi-backup/prd.md", "reason": "Global rules: path-scoped commits, forbidden files, ownership boundaries, verification commands."}

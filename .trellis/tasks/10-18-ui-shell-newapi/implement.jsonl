@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec entry point: quality check command list and guideline index."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Console and API contracts: hash navigation, component signatures, empty/error-state matrix, browser verification anchors. Primary contract for the shell rewrite."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/research/newapi-shell-research.md", "reason": "newapi radius scale, sidebar widths/animation, account dropdown, storage 'not found' root cause, and the pre-existing duplication inventory."}
+{"file": ".trellis/tasks/10-18-ui-revamp-newapi-backup/prd.md", "reason": "Parent requirements: avoid the template's 8 known defects, hard constraints (1rem/0.5rem radius, no regressions, no duplicated elements), shared-file ownership and commit rules."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/design.md", "reason": "Chosen radius token set, sidebar collapsed-state mechanism, navigation registry shape, account menu placement, error localizer API."}
+{"file": ".trellis/tasks/10-18-ui-shell-newapi/implement.md", "reason": "Ordered, commit-sliced execution plan with validation gates."}
