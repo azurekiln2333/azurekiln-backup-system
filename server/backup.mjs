@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import { AppError, isWithin, resolveSourcePath } from './config.mjs';
 import { isExcluded } from './exclusions.mjs';
 import { aborted, probe, redact, runProcess } from './process.mjs';
+import { newApiSecrets, prepareNewApi } from './newapi.mjs';
 import { normalizeRemotePath } from './rclone.mjs';
 
 const finished = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
@@ -116,7 +117,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
   };
   const update = (id, patch) => store.updateRun(id, patch);
   const phase = (id, value) => update(id, { phase: value, progress: null });
-  const secretsFor = (job) => [job.archive.password, job.vaultwarden.database.password, store.getSettings({ includeSecrets: true }).smtp.password, store.getSettings({ includeSecrets: true }).rclone.configPassword].filter(Boolean);
+  const secretsFor = (job) => [job.archive.password, job.vaultwarden.database.password, ...newApiSecrets(job), store.getSettings({ includeSecrets: true }).smtp.password, store.getSettings({ includeSecrets: true }).rclone.configPassword].filter(Boolean);
   const log = (id, message, level = 'info', secrets = []) => store.appendLog(id, { level, message: redact(message, secrets) });
   const stagePath = (jobId, runId) => {
     if (!ownedId.test(jobId) || !ownedId.test(runId)) throw new Error('Invalid internal backup identifier');
@@ -548,6 +549,15 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         })),
       });
       else if (job.type === 'vaultwarden') await prepareVaultwarden(job, payload, stamp, signal, secrets, runId);
+      else if (job.type === 'newapi') {
+        const prepared = await prepareNewApi({
+          job, payload, stage, stamp, signal, secrets, runId, config, log, update, runTool,
+        });
+        if (prepared?.warnings?.length) {
+          const existing = store.getRun(runId).warnings ?? [];
+          update(runId, { warnings: [...existing, ...prepared.warnings.map((warning) => redact(warning, secrets))] });
+        }
+      }
       else if (changes) {
         const packed = new Set(await tarIncremental(source, stage, path.join(payload, `incremental.${stamp}.tar`), [...changes.added, ...changes.modified], signal, secrets, runId));
         const missing = [...changes.added, ...changes.modified].filter((name) => !packed.has(name));

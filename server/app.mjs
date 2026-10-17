@@ -9,6 +9,7 @@ import { AppError, isWithin, loadConfig, resolveSourcePath } from './config.mjs'
 import { createStore, mergeConfig, SYSTEM_JOB_ID } from './store.mjs';
 import { createAuth } from './auth.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
+import { validateNewApiJob } from './newapi.mjs';
 import { createWatcher } from './watcher.mjs';
 
 const wrap = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
@@ -27,6 +28,7 @@ function validateJob(input, config, { allowMissing = false } = {}) {
     if (job.archive.format !== '7z' || !job.archive.encrypted) throw new AppError('System configuration backups require an encrypted 7z archive.', 400, 'SYSTEM_ARCHIVE_REQUIRED');
     if (job.enabled && !job.archive.password) throw new AppError('Set an archive password before enabling the system configuration task.', 400, 'ARCHIVE_PASSWORD_REQUIRED');
   } else if (job.type === 'directory') job.sourcePath = resolveSourcePath(config, job.sourcePath, { directory: true, allowMissing });
+  else if (job.type === 'newapi') validateNewApiJob(job, config, { allowMissing });
   else {
     const dataDir = job.vaultwarden.dataDir || job.sourcePath;
     job.vaultwarden.dataDir = resolveSourcePath(config, dataDir, { directory: true, allowMissing });
