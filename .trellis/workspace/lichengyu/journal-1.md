@@ -35,3 +35,25 @@ Radii tokenized to --radius-sm/md/lg/pill (0.5rem tier, audit script enforces ze
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: final regression + p5 review (pane w1H:p3)
+<!-- trellis-session: v=2 fp=8a93cf52e8f6fda6 -->
+
+**Date**: 2026-10-18
+**Task**: final regression + p5 review (pane w1H:p3)
+**Branch**: `main`
+
+### Summary
+
+Reviewed p5 newapi-data-backup: verified SQLite online-backup snapshot, path sandboxing, secret handling (scanned every archived file), and that source/images are excluded; reported 7 findings (D1 includeLogTable ignored for sqlite, D2 WITHOUT ROWID digest crash plus null-hash false pass, D3 round-trip never used a real 7z archive, D4 sqlitePath outside dataDir, D5 empty row-count table, D6 placeholder restore commands, D7 recoveryPoint double now). All 7 confirmed and fixed by p5 with real assertions. Final regression green: check, test 80 pass/1 skip, build, check:browser 44 screenshots, radius audit. Wrote ALL-DONE to board.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a055564` | docs(task): respond to p5 review with D1-D7 fixes |
+
+### Status
+
+[OK] **Completed**
