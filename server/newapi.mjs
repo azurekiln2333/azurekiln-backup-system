@@ -310,8 +310,26 @@ export function buildRestoreDocument(manifest) {
       lines.push('ClickHouse 日志库**未自动导出**,请手工执行:', '', '```sql', 'SELECT * FROM logs FORMAT Native > logs.native', '```');
     } else if (log.type === 'sqlite') {
       lines.push('```', `cp restore/${log.exportFile} ./new-api/data/one-api-log.db`, '```', '', '`LOG_SQL_DSN` 必须指向该文件。');
+    } else if (log.type === 'postgresql') {
+      lines.push(
+        '```',
+        `docker compose exec -T postgres psql -U <user> -d postgres -c 'CREATE DATABASE "${log.database}";'`,
+        `docker compose exec -T postgres pg_restore -U <user> -d ${log.database} --clean --if-exists --no-owner - < restore/${log.exportFile}`,
+        '```',
+        '',
+        '把 `<user>` 换成 `.env` 中 `LOG_SQL_DSN` 的用户名;日志库与主库同实例时容器名通常为 `postgres`。',
+      );
+    } else if (log.type === 'mysql') {
+      lines.push(
+        '```',
+        `docker compose exec -T mysql mysql -u<user> -p -e 'CREATE DATABASE IF NOT EXISTS \`${log.database}\`;'`,
+        `docker compose exec -T mysql mysql -u<user> -p ${log.database} < restore/${log.exportFile}`,
+        '```',
+        '',
+        '把 `<user>` 换成 `.env` 中 `LOG_SQL_DSN` 的用户名;若容器名不是 `mysql`,按 `docker-compose.yml` 的 service 名替换。',
+      );
     } else {
-      lines.push('```', `docker compose exec -T <db> <restore-tool> restore/${log.exportFile} ${log.database}`, '```');
+      lines.push('```', `# 未知日志库类型 ${log.type},请按 restore/${log.exportFile} 的实际格式导入`, '```');
     }
   }
   lines.push(
@@ -332,9 +350,22 @@ export function buildRestoreDocument(manifest) {
     '',
     '逐表行数必须与下列清单一致(在库内执行 `SELECT count(*) FROM "<表名>"`):',
     '',
-    '| 表 | 行数 |',
-    '| --- | --- |',
-    ...main.tables.map((table) => `| ${table.name} | ${table.rows} |`),
+    ...(main.tables.length
+      ? [
+        '| 表 | 行数 |',
+        '| --- | --- |',
+        ...main.tables.map((table) => `| ${table.name} | ${table.rows} |`),
+      ]
+      // A server dump cannot be introspected without a live connection, so there are no row counts.
+      : [
+        `本次归档未包含 ${main.type} 的逐表行数与内容哈希(导出时未连接数据库取值)。还原后请自查关键表:`, '',
+        '```sql',
+        'SELECT count(*) AS users FROM users;',
+        'SELECT count(*) AS channels FROM channels;',
+        'SELECT count(*) AS tokens FROM tokens;',
+        'SELECT count(*) AS logs FROM logs;',
+        '```',
+      ]),
     '',
     ...(manifest.warnings.length ? ['## 告警', '', ...manifest.warnings.map((warning) => `- ${warning}`), ''] : []),
   );
@@ -369,6 +400,7 @@ export async function prepareNewApi({ job, payload, stage, stamp, signal, secret
     // Record the resolved path relative to dataDir so a restorer can spot a relocated database.
     mainDatabase.dataDirRelativePath = path.relative(dataDir, source).split(path.sep).join('/') || '.';
     mainDatabase.exportFile = 'db/main.sqlite3';
+    mainDatabase.snapshotAt = now();
     mainDatabase.tables = sqliteTableDigests(target);
     mainDatabase.integrity = 'ok';
   } else {
@@ -378,6 +410,7 @@ export async function prepareNewApi({ job, payload, stage, stamp, signal, secret
     mainDatabase.type = api.dbType;
     mainDatabase.database = api.database.name;
     mainDatabase.exportFile = `db/main.${dumped.extension}`;
+    mainDatabase.snapshotAt = now();
     mainDatabase.tables = [];
   }
   mainDatabase.logsIncluded = api.includeLogTable;
@@ -478,7 +511,9 @@ export async function prepareNewApi({ job, payload, stage, stamp, signal, secret
     kind: 'azurekiln-newapi-backup',
     manifestVersion: 1,
     generatedAt: now(),
-    recoveryPoint: now(),
+    // Captured when the main database snapshot finished, not at manifest write time, so a
+    // restorer can reason about the data-loss window.
+    recoveryPoint: mainDatabase.snapshotAt ?? now(),
     restoreInstructions: 'RESTORE.md',
     mainDatabase,
     logDatabase,

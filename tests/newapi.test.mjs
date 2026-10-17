@@ -476,3 +476,57 @@ test('buildRestoreDocument reflects clickhouse and excluded logs', () => {
   assert.match(document, /\*\*未包含\*\*/);
   assert.match(document, /logs table excluded/);
 });
+
+test('RESTORE.md: no empty row-count table for server dumps, concrete log commands', () => {
+  // D5: a PostgreSQL/MySQL dump has no per-table row counts; the guide must not print an empty table.
+  const noTables = buildRestoreDocument({
+    generatedAt: '2026-10-18T00:00:00.000Z',
+    appVersion: { image: 'calciumion/new-api:v0.9.9' },
+    mainDatabase: { type: 'postgresql', database: 'new-api', exportFile: 'db/main.dump', logsIncluded: true, tables: [] },
+    logDatabase: { type: 'postgresql', database: 'new-api-log', exportFile: 'db/log.dump' },
+    files: [{ path: 'config/env' }],
+    warnings: [],
+  });
+  assert.ok(!/\| 表 \| 行数 \|/.test(noTables), 'must not print an empty row-count table');
+  assert.match(noTables, /未包含 postgresql 的逐表行数与内容哈希/);
+  assert.match(noTables, /SELECT count\(\*\) AS users FROM users/);
+
+  // D6: the log-database commands must be concrete, not angle-bracket placeholders.
+  assert.ok(!/<restore-tool>/.test(noTables), 'log restore command must not use <restore-tool>');
+  assert.match(noTables, /pg_restore -U <user> -d new-api-log/);
+
+  const mysqlLog = buildRestoreDocument({
+    generatedAt: '2026-10-18T00:00:00.000Z',
+    appVersion: { image: 'x' },
+    mainDatabase: { type: 'mysql', database: 'new-api', exportFile: 'db/main.sql', logsIncluded: true, tables: [] },
+    logDatabase: { type: 'mysql', database: 'new-api-log', exportFile: 'db/log.sql' },
+    files: [{ path: 'config/env' }],
+    warnings: [],
+  });
+  assert.ok(!/<db>/.test(mysqlLog), 'must not leave a <db> placeholder');
+  assert.match(mysqlLog, /CREATE DATABASE IF NOT EXISTS `new-api-log`/);
+  assert.match(mysqlLog, /mysql -u<user> -p new-api-log < restore\/db\/log\.sql/);
+});
+
+test('manifest recoveryPoint is the snapshot instant, not manifest write time', async () => {
+  const workspace = await makeWorkspace();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-newapi-recovery-'));
+  try {
+    const stage = path.join(root, 'stage');
+    const payload = path.join(stage, 'payload');
+    await mkdir(payload, { recursive: true });
+    const job = baseJob(workspace);
+    validateNewApiJob(job, workspace.config);
+    const started = Date.now();
+    await prepareNewApi({
+      job, payload, stage, stamp: '20261018T000000Z', signal: new AbortController().signal,
+      secrets: newApiSecrets(job), runId: 'run-rp', config: workspace.config,
+      log: () => {}, update: () => {},
+    });
+    const manifest = JSON.parse(await readFile(path.join(payload, 'manifest.json'), 'utf8'));
+    // The recovery point must come from the snapshot step, and must not be later than the manifest.
+    assert.equal(manifest.recoveryPoint, manifest.mainDatabase.snapshotAt);
+    assert.ok(Date.parse(manifest.recoveryPoint) >= started, 'recoveryPoint must be after the run started');
+    assert.ok(Date.parse(manifest.recoveryPoint) <= Date.parse(manifest.generatedAt), 'recoveryPoint must not be after generatedAt');
+  } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
+});
