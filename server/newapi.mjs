@@ -3,7 +3,7 @@ import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rm, stat, write
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
-import { AppError, resolveSourcePath } from './config.mjs';
+import { AppError, isWithin, resolveSourcePath } from './config.mjs';
 import { isExcluded } from './exclusions.mjs';
 import { aborted, runProcess } from './process.mjs';
 
@@ -67,6 +67,10 @@ export function validateNewApiJob(job, config, { allowMissing = false } = {}) {
   const sqliteDefault = path.join(source, 'one-api.db');
   if (api.dbType === 'sqlite') {
     api.sqlitePath = api.sqlitePath ? resolveSourcePath(config, api.sqlitePath, { allowMissing: true }) : sqliteDefault;
+    // Sources may legitimately keep the database outside dataDir, but a restorer must be able to see that.
+    if (!isWithin(source, api.sqlitePath)) {
+      throw new AppError('The SQLite database must live inside the new-api data directory so the archive stays self-describing. Move it there or select the data directory that contains it.', 400, 'NEWAPI_SQLITE_OUTSIDE_DATA_DIR');
+    }
   } else {
     assertDatabase(api.database, 'The new-api database', api.dbType);
     api.database.port ??= databaseDefaults(api.dbType);
@@ -362,6 +366,8 @@ export async function prepareNewApi({ job, payload, stage, stamp, signal, secret
     log(runId, 'Created an online SQLite snapshot of the new-api main database', 'info', secrets);
     mainDatabase.type = 'sqlite';
     mainDatabase.database = path.basename(source);
+    // Record the resolved path relative to dataDir so a restorer can spot a relocated database.
+    mainDatabase.dataDirRelativePath = path.relative(dataDir, source).split(path.sep).join('/') || '.';
     mainDatabase.exportFile = 'db/main.sqlite3';
     mainDatabase.tables = sqliteTableDigests(target);
     mainDatabase.integrity = 'ok';

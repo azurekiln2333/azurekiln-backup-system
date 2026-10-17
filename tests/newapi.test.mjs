@@ -133,6 +133,19 @@ test('validateNewApiJob sandboxes every path and requires an encrypted 7z archiv
     assert.throws(() => validateNewApiJob(baseJob(workspace, { dataDir: 'relative/path' }), workspace.config), /absolute source path/);
     assert.throws(() => validateNewApiJob(baseJob(workspace, { dataDir: path.join(os.tmpdir(), 'outside') }), workspace.config), { code: 'SOURCE_PATH_FORBIDDEN' });
 
+    // A SQLite path outside the data directory would make the archive stop being self-describing.
+    const elsewhere = path.join(workspace.sources, 'other-db', 'one-api.db');
+    await mkdir(path.dirname(elsewhere), { recursive: true });
+    seedDatabase(elsewhere);
+    assert.throws(() => validateNewApiJob(baseJob(workspace, { sqlitePath: elsewhere }), workspace.config), { code: 'NEWAPI_SQLITE_OUTSIDE_DATA_DIR' });
+    // Inside the data directory is accepted and recorded relative to it.
+    const nested = path.join(workspace.dataDir, 'nested', 'one-api.db');
+    await mkdir(path.dirname(nested), { recursive: true });
+    seedDatabase(nested);
+    const nestedJob = baseJob(workspace, { sqlitePath: nested });
+    validateNewApiJob(nestedJob, workspace.config);
+    assert.equal(nestedJob.newapi.sqlitePath, nested);
+
     const plaintext = baseJob(workspace);
     plaintext.archive.encrypted = false;
     assert.throws(() => validateNewApiJob(plaintext, workspace.config), { code: 'NEWAPI_ARCHIVE_REQUIRED' });
@@ -250,6 +263,7 @@ test('prepareNewApi builds a restorable payload with a verified manifest', async
     assert.equal(manifest.kind, 'azurekiln-newapi-backup');
     assert.equal(manifest.mainDatabase.type, 'sqlite');
     assert.equal(manifest.mainDatabase.integrity, 'ok');
+    assert.equal(manifest.mainDatabase.dataDirRelativePath, '.');
     assert.equal(manifest.mainDatabase.logsIncluded, true);
     assert.equal(manifest.logDatabase.type, 'same');
     assert.ok(manifest.files.some((file) => file.path === 'config/env'));
