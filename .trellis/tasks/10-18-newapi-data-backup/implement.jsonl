@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Backup runtime contracts: adapters, consistency snapshots, encryption enforcement, manifest/verification, cleanup and safety tests that the newapi adapter must obey"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend quality gate: which commands to run (npm test/check/build) and what to verify for server changes"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Native node:sqlite usage, online backup API and integrity-check conventions for SQLite snapshots"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "AppError codes/status conventions used by validateNewApiJob validation failures"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Run log + redaction rules so database passwords never reach logs, API responses or errors"}
+{"file": ".trellis/tasks/10-18-newapi-data-backup/research/newapi-data-inventory.md", "reason": "Authoritative new-api table inventory, external state judgements and coverage matrix that defines what the adapter must include or exclude"}
+{"file": ".trellis/tasks/10-18-newapi-data-backup/research/newapi-backup-rules.md", "reason": "Consistency commands (VACUUM INTO / mysqldump / pg_dump / ClickHouse), restore steps, manifest schema and security requirements to implement"}
