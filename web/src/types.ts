@@ -15,6 +15,10 @@ export interface Job extends JobInput {
   lastRun?: Pick<Run, 'id' | 'status' | 'phase' | 'startedAt' | 'finishedAt' | 'createdAt' | 'archiveBytes' | 'error' | 'progress'> | null;
   archive: JobInput['archive'] & { passwordSet?: boolean };
   vaultwarden: JobInput['vaultwarden'] & { database: JobInput['vaultwarden']['database'] & { passwordSet?: boolean } };
+  newapi: JobInput['newapi'] & {
+    database: JobInput['newapi']['database'] & { passwordSet?: boolean };
+    logDatabase: JobInput['newapi']['logDatabase'] & { passwordSet?: boolean };
+  };
 }
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export interface Target {
@@ -30,7 +34,7 @@ export interface Run {
   id: string;
   jobId: string;
   jobName: string;
-  type: 'directory' | 'vaultwarden' | 'system';
+  type: 'directory' | 'vaultwarden' | 'system' | 'newapi';
   status: RunStatus;
   phase: string;
   trigger: string;

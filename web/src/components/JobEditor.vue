@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref, toRaw, watch } from 'vue';
-import { Database, Eye, EyeOff, Folder, FolderOpen, HardDrive, LockKeyhole, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next';
+import { Database, Eye, EyeOff, Folder, FolderOpen, HardDrive, KeyRound, LockKeyhole, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next';
 import { batchJobSchema, jobSchema, newJob } from '../../../shared/contracts.mjs';
 import type { Job, JobInput, Remote } from '../types';
 import { api, errorMessage, write } from '../api';
 import Modal from './Modal.vue';
 import PathPicker from './PathPicker.vue';
-const props = defineProps<{ job?: Job; jobs?: Job[]; initialType?: 'directory' | 'vaultwarden'; initialSourcePath?: string }>();
+import NewApiFields from './NewApiFields.vue';
+const props = defineProps<{ job?: Job; jobs?: Job[]; initialType?: 'directory' | 'vaultwarden' | 'newapi'; initialSourcePath?: string }>();
 const emit = defineEmits<{ close: []; saved: [job: Job]; batchSaved: [jobs: Job[]] }>();
 const form = reactive<JobInput>(structuredClone(props.job ? toRaw(props.job) : newJob(props.initialType ?? 'directory')));
 form.archive.folderTemplate ??= '{datetime}';
@@ -80,7 +81,22 @@ const saving = ref(false);
 const remotes = ref<Remote[]>([]);
 const remoteError = ref('');
 const excludes = ref(form.excludes.join('\n'));
-const sourcePicker = ref<'sourcePath' | 'dataDir' | 'attachmentsPath' | 'sendsPath' | null>(null);
+const sourcePicker = ref<SourcePickerTarget | null>(null);
+type VaultwardenPickerTarget = 'dataDir' | 'attachmentsPath' | 'sendsPath';
+type NewApiPickerKey = 'newapiDataDir' | 'newapiEnvFilePath' | 'newapiComposeFilePath' | 'newapiServiceFilePath' | 'newapiProxyConfigPath' | 'newapiPluginsPath' | 'newapiLogsPath';
+type SourcePickerTarget = 'sourcePath' | VaultwardenPickerTarget | NewApiPickerKey;
+const newapiFieldMap: Record<NewApiPickerKey, 'dataDir' | 'envFilePath' | 'composeFilePath' | 'serviceFilePath' | 'proxyConfigPath' | 'pluginsPath' | 'logsPath'> = {
+  newapiDataDir: 'dataDir', newapiEnvFilePath: 'envFilePath', newapiComposeFilePath: 'composeFilePath',
+  newapiServiceFilePath: 'serviceFilePath', newapiProxyConfigPath: 'proxyConfigPath',
+  newapiPluginsPath: 'pluginsPath', newapiLogsPath: 'logsPath',
+};
+const newapiPickerFromField = (field: 'dataDir' | 'envFilePath' | 'composeFilePath' | 'serviceFilePath' | 'proxyConfigPath' | 'pluginsPath' | 'logsPath'): NewApiPickerKey => `newapi${field.charAt(0).toUpperCase()}${field.slice(1)}` as NewApiPickerKey;
+const isNewApiPicker = (value: SourcePickerTarget): value is NewApiPickerKey => value in newapiFieldMap;
+function pickerPath(target: SourcePickerTarget) {
+  if (target === 'sourcePath') return form.sourcePath;
+  if (isNewApiPicker(target)) return form.newapi[newapiFieldMap[target]];
+  return form.vaultwarden[target];
+}
 const destinationPicker = ref<number | null>(null);
 const showArchivePassword = ref(false);
 const timezones = [...new Set(['Asia/Shanghai', 'UTC', ...Intl.supportedValuesOf('timeZone'), form.schedule.timezone])];
@@ -99,19 +115,31 @@ const cronPreset = computed({
 });
 const archivePasswordSet = computed(() => props.job?.archive.passwordSet ?? false);
 const dbPasswordSet = computed(() => props.job?.vaultwarden.database.passwordSet ?? false);
+const newapiDbPasswordSet = computed(() => props.job?.newapi.database.passwordSet ?? false);
+const newapiLogDbPasswordSet = computed(() => props.job?.newapi.logDatabase.passwordSet ?? false);
 watch(form, () => { error.value = ''; }, { deep: true, flush: 'sync' });
 watch(excludes, () => { error.value = ''; });
 watch(() => form.archive.encrypted, enabled => { if (enabled && form.archive.format === 'tar.gz') form.archive.format = '7z'; });
 watch(() => form.vaultwarden.dbType, type => { form.vaultwarden.database.port = type === 'postgresql' ? 5432 : type === 'mysql' ? 3306 : undefined; });
+// new-api backups always carry credentials, so keep the archive encrypted 7z without surprising the user later.
+watch(() => form.type, type => {
+  if (type !== 'newapi') return;
+  form.archive.format = '7z';
+  form.archive.encrypted = true;
+  form.watch.enabled = false;
+});
 async function loadRemotes() {
   try { remotes.value = await api('/rclone/remotes'); remoteError.value = ''; }
   catch (cause) { remoteError.value = errorMessage(cause); }
 }
 function selectSource(path: string) {
-  if (sourcePicker.value === 'sourcePath') {
+  const target = sourcePicker.value;
+  if (!target) return;
+  if (target === 'sourcePath') {
     form.sourcePath = path;
     if (batch.value) void loadBatchFolders();
-  } else if (sourcePicker.value) form.vaultwarden[sourcePicker.value] = path;
+  } else if (isNewApiPicker(target)) form.newapi[newapiFieldMap[target]] = path;
+  else form.vaultwarden[target] = path;
   sourcePicker.value = null;
 }
 function addDestination() { form.destinations.push({ remote: '', path: '' }); }
@@ -136,6 +164,10 @@ async function save() {
   if (form.type === 'directory' && !form.sourcePath.trim()) { showError('请选择源目录', 0); return; }
   if (form.type === 'vaultwarden' && !form.vaultwarden.dataDir.trim()) { showError('请选择 Vaultwarden 数据目录', 0); return; }
   if (form.type === 'vaultwarden' && form.vaultwarden.dbType !== 'sqlite' && (!form.vaultwarden.database.host.trim() || !form.vaultwarden.database.name.trim() || !form.vaultwarden.database.username.trim())) { showError('请填写数据库主机、数据库名称和用户名', 0); return; }
+  if (form.type === 'newapi' && !form.newapi.dataDir.trim()) { showError('请选择 new-api 数据目录', 0); return; }
+  if (form.type === 'newapi' && !form.newapi.envFilePath.trim()) { showError('请选择 new-api 的 .env 文件，否则无法还原密钥', 0); return; }
+  if (form.type === 'newapi' && form.newapi.dbType !== 'sqlite' && (!form.newapi.database.host.trim() || !form.newapi.database.name.trim() || !form.newapi.database.username.trim())) { showError('请填写主库主机、数据库名称和用户名', 0); return; }
+  if (form.type === 'newapi' && !['same', 'sqlite'].includes(form.newapi.logDbType) && !form.newapi.logDatabase.name.trim()) { showError('请填写日志库名称', 0); return; }
   if (form.type !== 'directory') form.watch.enabled = false;
   if (!form.destinations.length && (form.type !== 'system' || form.enabled)) { showError('请添加备份目标', 1); return; }
   if (form.destinations.some(item => !item.remote)) { showError('请选择每个目标的 rclone 远端', 1); return; }
@@ -174,7 +206,7 @@ void loadRemotes();
             <label v-else class="field full">任务名称<input v-model="form.name" maxlength="100" placeholder="任务名称" /></label>
             <label class="field full">任务描述<textarea v-model="form.description" maxlength="500" rows="3" placeholder="可选" /></label>
             <div class="field full"><span>标签</span><div class="tag-input"><span v-for="(tag, index) in form.tags" :key="tag" class="tag-chip">{{ tag }}<button type="button" :title="`移除标签 ${tag}`" :aria-label="`移除标签 ${tag}`" @click="form.tags.splice(index, 1)"><X :size="11" /></button></span><input v-model="tagDraft" list="job-tag-suggestions" aria-label="添加标签" :placeholder="form.tags.length ? '' : '例如 mysql，回车添加'" :disabled="form.tags.length >= 10" maxlength="32" @keydown="tagKey" @blur="addTags()" /></div><datalist id="job-tag-suggestions"><option v-for="tag in knownTags" :key="tag" :value="tag" /></datalist></div>
-            <div v-if="form.type !== 'system' && !(batch && canBatch)" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button></div></div>
+            <div v-if="form.type !== 'system' && !(batch && canBatch)" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button><button type="button" :class="{ active: form.type === 'newapi' }" @click="form.type = 'newapi'"><KeyRound :size="17" />new-api</button></div></div>
             <label v-if="form.type === 'directory'" class="field full">{{ batch && canBatch ? '父目录' : '源目录' }}<div class="input-action"><input v-model="form.sourcePath" placeholder="/sources/data" @change="batch && canBatch && loadBatchFolders()" /><button type="button" class="icon-button" title="浏览源目录" aria-label="浏览源目录" @click="sourcePicker = 'sourcePath'"><FolderOpen :size="18" /></button></div></label>
             <div v-if="batch && canBatch" class="field full">
               <div class="batch-toolbar"><span>子目录（已选 {{ batchSelected.length }} / {{ batchFolders.length }}）</span><div><button type="button" class="text-button" :disabled="!batchFolders.length" @click="batchSelected = batchFolders.filter(folder => !folder.exists).map(folder => folder.name)">全选</button><button type="button" class="text-button" :disabled="!batchSelected.length" @click="batchSelected = []">全不选</button><button type="button" class="icon-button" title="重新读取子目录" aria-label="重新读取子目录" :disabled="batchLoading || !form.sourcePath.trim()" @click="loadBatchFolders"><RefreshCw :size="16" :class="{ spinning: batchLoading }" /></button></div></div>
@@ -203,6 +235,14 @@ void loadRemotes();
               <label class="field full">RSA 密钥路径前缀<input v-model="form.vaultwarden.rsaKeyPath" placeholder="默认：数据目录/rsa_key" /></label>
               <label class="field">附件目录<div class="input-action"><input v-model="form.vaultwarden.attachmentsPath" placeholder="默认：数据目录/attachments" /><button type="button" class="icon-button" title="浏览附件目录" aria-label="浏览附件目录" @click="sourcePicker = 'attachmentsPath'"><FolderOpen :size="18" /></button></div></label>
               <label class="field">Sends 目录<div class="input-action"><input v-model="form.vaultwarden.sendsPath" placeholder="默认：数据目录/sends" /><button type="button" class="icon-button" title="浏览 Sends 目录" aria-label="浏览 Sends 目录" @click="sourcePicker = 'sendsPath'"><FolderOpen :size="18" /></button></div></label>
+            </template>
+            <template v-else-if="form.type === 'newapi'">
+              <NewApiFields
+                :model-value="form.newapi"
+                :database-password-set="newapiDbPasswordSet"
+                :log-database-password-set="newapiLogDbPasswordSet"
+                @pick="sourcePicker = newapiPickerFromField($event)"
+              />
             </template>
             <div v-else class="field full"><span>备份内容</span><strong>系统状态、加密密钥、rclone 配置</strong></div>
             <label v-if="form.type !== 'system'" class="field full">排除规则<textarea v-model="excludes" rows="3" placeholder="*.log&#10;cache/**" /></label>
@@ -269,6 +309,6 @@ void loadRemotes();
       <footer class="modal-footer"><button class="button secondary" type="button" @click="emit('close')">取消</button><button class="button primary" :disabled="saving"><Save :size="16" />{{ saving ? '保存中…' : batch && canBatch ? `创建 ${batchSelected.length} 个任务` : '保存任务' }}</button></footer>
     </form>
   </Modal>
-  <PathPicker v-if="sourcePicker" kind="source" :initial-path="sourcePicker === 'sourcePath' ? form.sourcePath : form.vaultwarden[sourcePicker]" @close="sourcePicker = null" @select="selectSource" />
+  <PathPicker v-if="sourcePicker" kind="source" :initial-path="pickerPath(sourcePicker)" @close="sourcePicker = null" @select="selectSource" />
   <PathPicker v-if="destinationPicker !== null" kind="remote" :remote="form.destinations[destinationPicker]?.remote" :initial-path="form.destinations[destinationPicker]?.path" @close="destinationPicker = null" @select="path => { if (destinationPicker !== null) form.destinations[destinationPicker]!.path = path; destinationPicker = null; }" />
 </template>
