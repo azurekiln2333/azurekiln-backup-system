@@ -8,7 +8,7 @@ AzureKiln Backup 是供單一管理員使用的目錄、Vaultwarden 資料及系
 
 | 模組 | 支援能力 |
 | --- | --- |
-| 備份來源 | 指定目錄；Vaultwarden SQLite、PostgreSQL、MySQL/MariaDB；系統設定 |
+| 備份來源 | 指定目錄；Vaultwarden SQLite、PostgreSQL、MySQL/MariaDB；new-api 全量資料；系統設定 |
 | 封存與遠端 | tar.gz、AES-256 加密的 7z/ZIP；可獨立設定的 rclone 目的地 |
 | 執行管理 | 手動與排程執行、遠端驗證、版本保留、下載及郵件通知 |
 | 管理介面 | 唯讀掛載檔案瀏覽、執行日誌、暫存空間統計及本機封存清理 |
@@ -81,6 +81,8 @@ docker compose up -d --build
 版本資料夾與封存檔名支援 `{datetime}`（UTC）及 `{task}`。資料夾範本必須包含 `{datetime}`。典型遠端配置為 `destination/2026-09-28_11-24-18-123Z/task.7z`；同一資料夾中的 `complete.json` 記錄任務 ID、執行 ID、大小及 SHA-256。請勿手動移動或重新命名既有版本。排除規則支援一般路徑、`*` 及 `?`，不接受擴充 glob 語法。
 
 Vaultwarden 任務支援 SQLite、PostgreSQL、MySQL/MariaDB。任務會建立一致的資料庫快照或匯出，並納入存在的 `config.json`、`rsa_key*`、`attachments`、`sends`。不存在的選用項目會記錄為略過；資料庫失敗則使任務失敗。封存內保留 `db.*`、`config.*`、`rsakey.*`、`attachments.*`、`sends.*` 等慣用名稱。
+
+new-api 任務用於將 new-api 的整套持久化資料搬到另一台機器還原（不包含程式原始碼與 Docker 映像）。任務會匯出主資料库（SQLite 線上快照、MySQL `--single-transaction`、PostgreSQL `pg_dump`）及可選的獨立日誌庫（`LOG_SQL_DSN`；ClickHouse 只寫入手動匯出命令並記錄警報），收集必要的 `.env` 以及可選的 `docker-compose.yml`、systemd unit、反向代理設定與外掛腳本目錄，並打包資料目錄（自動排除 `new-api-body-cache`、`*.db-wal`、`*.db-shm`）。封存內的 `manifest.json` 記錄主庫/日誌庫引擎與庫名、逐表列數與內容雜湊、檔案雜湊、new-api 版本與警報；`RESTORE.md` 提供逐步還原與逐表驗証命令。關閉「包含 logs 表」時消耗與 tokens 歷史將缺失並在封存中標註。此類型強制使用 AES-256 加密的 7z 封存，因為 `.env` 內的 `CRYPTO_SECRET` 是解密頻道金鑰的唯一鑰匙，還原時必須原樣保留。
 
 每次執行都會建立獨立的遠端版本並驗證上傳。明文暫存資料在封存驗證後清除。「系統設定 → 暫存檔案」的策略決定成功上傳後如何處理本機封存：預設為「立即清理」；選擇「手動清理」時，封存會保留到管理員於該頁逐份或全部清理。郵件傳送失敗不會改變成功的備份狀態，也不會阻止所選清理策略。失敗任務的暫存資料僅保留每項任務最新的一次，並受保留時間及暫存空間上限約束。遠端版本保留僅刪除系統記錄為該任務所有的完成版本。
 

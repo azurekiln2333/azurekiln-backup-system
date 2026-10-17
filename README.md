@@ -8,7 +8,7 @@ AzureKiln Backup 是面向单一管理员的目录与 Vaultwarden 备份管理�
 
 | 模块 | 能力 |
 | --- | --- |
-| 备份来源 | 指定目录；Vaultwarden SQLite、PostgreSQL、MySQL/MariaDB；系统配置 |
+| 备份来源 | 指定目录；Vaultwarden SQLite、PostgreSQL、MySQL/MariaDB；new-api 全量数据；系统配置 |
 | 归档与远端 | tar.gz、AES-256 加密的 7z/ZIP；rclone 多目标上传、远端校验与版本保留 |
 | 调度与通知 | 定时或手动执行；开始、成功和失败邮件；独立记录备份与通知结果 |
 | 运维管理 | 执行历史、归档下载、只读源文件浏览、临时空间统计及本地归档清理 |
@@ -85,6 +85,8 @@ docker compose up -d --build
 排除规则支持路径文字、`*` 和 `?`，例如 `*.log`、`cache/**`；扩展 glob 语法不接受，以保证目录检查与归档工具的行为一致。
 
 Vaultwarden 专用任务包含 SQLite、PostgreSQL、MySQL/MariaDB 三种模式，默认 SQLite，页面按类型显示数据库连接和 TLS 字段。它生成数据库一致性快照/导出，并收集存在的 `config.json`、`rsa_key*`、`attachments`、`sends`，支持自定义路径。数据库失败则任务失败；可选内容不存在会记录为跳过。归档内保留上游的 `db.*`、`config.*`、`rsakey.*`、`attachments.*`、`sends.*` 结构。
+
+new-api 专用任务用于把 new-api 的整套持久化数据搬到另一台机器还原（不含程序源码和 Docker 镜像）。它导出主库（SQLite 在线快照、MySQL `--single-transaction`、PostgreSQL `pg_dump`）与可选的独立日志库（`LOG_SQL_DSN`；ClickHouse 只写入手工导出命令并记录告警），收集必需的 `.env` 以及可选的 `docker-compose.yml`、systemd unit、反代配置、插件脚本目录，并打包数据目录（自动排除 `new-api-body-cache`、`*.db-wal`、`*.db-shm`）。归档内的 `manifest.json` 记录主库/日志库引擎与库名、逐表行数与内容哈希、文件哈希、new-api 版本和告警；`RESTORE.md` 给出逐步还原与逐表校验命令。`包含 logs 表` 可关闭，此时消耗与 tokens 历史会缺失并在归档中标注。该类型强制使用 AES-256 加密的 7z 归档，因为 `.env` 内的 `CRYPTO_SECRET` 是解密渠道密钥的唯一钥匙，还原时必须原样保留。
 
 上传使用 rclone copy/copyto，每次执行均生成独立的远端版本。明文临时数据在归档验证后清理。上传验证成功后，本地归档按“系统设置 → 临时文件”中的策略处理：默认立即清理；选择手动清理时，归档保留在应用临时目录，直至管理员在该页面逐份或全部清理。邮件失败不改变备份成功状态，也不阻止归档策略执行。失败临时数据受每任务最新一次、保留时间和总空间上限约束。远端过期删除仅作用于该任务记录的成功备份版本。
 
