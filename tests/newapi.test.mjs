@@ -263,7 +263,8 @@ test('prepareNewApi builds a restorable payload with a verified manifest', async
     assert.equal(manifest.kind, 'azurekiln-newapi-backup');
     assert.equal(manifest.mainDatabase.type, 'sqlite');
     assert.equal(manifest.mainDatabase.integrity, 'ok');
-    assert.equal(manifest.mainDatabase.dataDirRelativePath, '.');
+    // The database path relative to dataDir, so a restorer can spot a relocated database.
+    assert.equal(manifest.mainDatabase.dataDirRelativePath, 'one-api.db');
     assert.equal(manifest.mainDatabase.logsIncluded, true);
     assert.equal(manifest.logDatabase.type, 'same');
     assert.ok(manifest.files.some((file) => file.path === 'config/env'));
