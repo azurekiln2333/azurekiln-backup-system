@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Quality Check section: commands and screenshot review expected before completion."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Verify the jobs view keeps documented selectors, empty states, accessibility and no duplicate headings."}
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Verify the batch endpoint and tags contract still match what the spec records."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Changes span shared contracts, server, UI and docs; use for cross-layer consistency review."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Judge whether grouping logic and the two App.vue helpers are justified duplication vs. extraction."}
+{"file": ".trellis/tasks/10-18-jobs-batch-grouping/design.md", "reason": "Design contract to check the implementation against (group modes, persistence, emits)."}
+{"file": ".trellis/tasks/10-18-jobs-batch-grouping/implement.md", "reason": "Execution checklist and validation gates to confirm each step landed."}
+{"file": ".trellis/tasks/10-18-jobs-batch-grouping/prd.md", "reason": "Acceptance criteria checklist for this subtask."}

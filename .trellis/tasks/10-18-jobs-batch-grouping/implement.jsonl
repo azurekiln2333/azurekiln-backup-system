@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend entry point: quality check commands and guide index for the Vue console."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Console and API contracts: component signatures, task editor rules, tag/batch behaviour this task extends."}
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Backend contract for POST /api/jobs/batch and task tags (validation, all-or-nothing, SOURCE_ROOTS)."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "AppError conventions used by the batch endpoint's 400/403/404/409 responses."}
+{"file": ".trellis/tasks/10-18-jobs-batch-grouping/design.md", "reason": "Grouping composable contract, JobsView props/emits, collapse persistence and batch tag default."}
+{"file": ".trellis/tasks/10-18-jobs-batch-grouping/prd.md", "reason": "Requirements R1-R3 and acceptance criteria for this subtask."}
+{"file": ".trellis/tasks/10-18-ui-revamp-newapi-backup/prd.md", "reason": "Global rules: path-scoped commits, file ownership, board protocol, ports, validation commands."}
