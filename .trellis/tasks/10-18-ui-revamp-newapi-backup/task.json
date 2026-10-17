@@ -1,0 +1,31 @@
+{
+  "id": "ui-revamp-newapi-backup",
+  "name": "ui-revamp-newapi-backup",
+  "title": "UI 重构(参照 newapi) + 令牌管理 + newapi 数据备份 + 批量/分组任务",
+  "description": "参照 newapi 重构控制台 UI,新增多令牌管理页,新增 newapi 完整数据备份能力,并完善批量创建与分组折叠任务列表。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "lichengyu",
+  "assignee": "lichengyu",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-18-jobs-batch-grouping",
+    "10-18-ui-shell-newapi",
+    "10-18-api-tokens",
+    "10-18-newapi-data-backup"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
