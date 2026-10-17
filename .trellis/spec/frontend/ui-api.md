@@ -12,6 +12,8 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - `FileManagerView` emits `createJob(path)` from the current directory or a directory row; App opens a directory JobEditor with that source prefilled.
 - `PathPicker` accepts `{kind,remote?,initialPath?}` and emits an absolute source or relative remote path.
 - `RunDetail` accepts `{id}` and polls until execution, cleanup, and notification settle.
+- `JobsView` accepts `{jobs,overview?,busyId,activeJob,canRunJob}` and emits `create|open|run|edit|remove|toggle|toggleWatch`. It owns the list's search, enable filter, tag filter, grouping mode and collapse state; it never calls the API itself, so App stays the sole owner of data and mutations.
+- `web/src/jobGroups.ts` exports `groupJobs(jobs,{mode,match})`, `readCollapsed/writeCollapsed(storage,mode)`, `readGroupMode/writeGroupMode(storage)`, `dirname` and `groupModeLabels`. `mode` is `none|tag|type|source`.
 
 ## 3. Contracts
 
@@ -27,11 +29,15 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - The task editor exposes 7z algorithm, thread count, and dictionary size alongside the compression level. Older task DTOs may omit these fields, so initialize them from the shared schema's defaults before editing. Keep 7z-only controls hidden for ZIP and tar.gz.
 - Directory task editors expose the optional file-change watcher and its debounce interval. Older task DTOs may omit `watch`; initialize its defaults before editing. Task details show the authenticated overview's live watcher state or error. The editor also picks the watch mode (whole directory vs. only new/modified files). The task list has a per-directory-task watch switch that PATCHes only `{watch:{enabled}}`, keeping mode and debounce; turning it off is allowed while the source is missing, like pausing.
 - Task tags are edited as chips (Enter or comma adds, Backspace removes, suggestions come from existing tags). The task list shows tag chips, filters by a tag select or by clicking a chip, and includes tags in search. New directory tasks can switch to batch mode: the source becomes a parent folder, its subfolders are listed with checkboxes (folders already covered by a task are disabled), and saving posts to `/api/jobs/batch`.
+- Batch mode seeds the tag list with the parent folder's name so the created tasks land in one group. The suggestion is only filled when the tag list is empty, and is replaced (never duplicated) when the user edits the parent path; a tag the user typed is never overwritten.
+- The task list groups rows by `标签` / `类型` / `源父目录`, or stays flat. Filtering (`match`) runs before bucketing, so group counts follow the filtered set. Tag mode buckets by a job's first tag and collects untagged jobs in a trailing `未分组` group; type mode keeps directory → vaultwarden → system order; source mode groups by the source's parent directory. Group headers show the label, count and failure count — never the page title or a repeat of the column headers.
+- A non-empty search forces every group open, because a hit inside a collapsed group would otherwise be invisible; the persisted collapse state is left untouched and reapplies when the search clears. Collapse state and the chosen mode live in `backup-job-groups:<mode>` and `backup-jobs-group-mode`; every `localStorage` access is wrapped in `try/catch` and a throwing or corrupt store degrades to "nothing collapsed" rather than breaking rendering.
 - Empty password fields preserve credentials. Task editor validates with shared schema and selects the relevant tab for missing fields. Hidden tabs must not block native form submission.
 - Runs filtering passes `jobId`, `status`, `limit`, and `offset` to the server. Counts and pages reflect the same filters; reject stale responses.
 - All Vaultwarden database modes remain available: SQLite, PostgreSQL, MySQL/MariaDB. Switching mode sets its normal port and exposes connection/TLS fields.
 - Tool and connection failures are visible; unavailable integrations never display fake success/progress.
 - Assets/fonts are local. Lucide icons are named by button labels/tooltips. Table overflow stays inside `.table-wrap`; modal content scrolls without losing commands.
+- `JobsView` intentionally re-declares the two one-line `sourcePath(job)` / `typeLabel(type)` helpers instead of importing them from `App.vue`: exporting them would force a `<script>` restructure in a file another workstream owns. Keep this duplication limited to genuinely trivial pure helpers.
 
 ## 4. Validation & Error Matrix
 
