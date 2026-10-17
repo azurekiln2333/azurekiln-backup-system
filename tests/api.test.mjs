@@ -165,6 +165,54 @@ test('a missing mounted source can be paused without bypassing source boundaries
   assert.equal((await context.request(`/api/jobs/${created.data.id}`, { method: 'PATCH', body: { enabled: false, sourcePath: path.dirname(context.config.sourceRoots[0]) } })).status, 403);
 });
 
+test('tags are trimmed, deduplicated case-insensitively and default to empty', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const created = await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { tags: [' mysql ', 'MySQL', 'prod'] }) });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.data.tags, ['mysql', 'prod']);
+  assert.equal((await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { name: 'Bad tags', tags: ['a,b'] }) })).status, 400);
+  assert.equal((await context.request('/api/jobs', { method: 'POST', body: inputJob(context.config, { name: 'Too many', tags: Array.from({ length: 11 }, (_, i) => `t${i}`) }) })).status, 400);
+  const system = (await context.request('/api/jobs')).data.find((job) => job.type === 'system');
+  assert.deepEqual(system.tags, []);
+});
+
+test('batch creation makes one task per child folder with mirrored destination folders', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const parentPath = path.join(context.config.sourceRoots[0], 'databases');
+  for (const name of ['blog_azurekiln_cn', 'azurekiln_cn', 'bbs_azurekiln_cn']) mkdirSync(path.join(parentPath, name), { recursive: true });
+  const template = { type: 'directory', tags: ['mysql'], destinations: [{ remote: 'AB', path: 'backups/mysql/' }], archive: { format: '7z', encrypted: true, password: 'private-archive-password' }, schedule: { enabled: true, cron: '0 4 * * *' }, watch: { enabled: true, mode: 'incremental', debounceSeconds: 5 } };
+  const body = { parentPath, folders: ['blog_azurekiln_cn', 'azurekiln_cn'], nameTemplate: 'MySQL · {folder}', template };
+  const created = await context.request('/api/jobs/batch', { method: 'POST', body });
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  assert.deepEqual(created.data.map((job) => job.name), ['MySQL · blog_azurekiln_cn', 'MySQL · azurekiln_cn']);
+  assert.deepEqual(created.data.map((job) => job.destinations[0].path), ['backups/mysql/blog_azurekiln_cn', 'backups/mysql/azurekiln_cn']);
+  for (const job of created.data) {
+    assert.equal(path.dirname(job.sourcePath), parentPath);
+    assert.deepEqual(job.tags, ['mysql']);
+    assert.equal(job.archive.passwordSet, true);
+    assert.equal(job.archive.password, undefined, 'secrets are not echoed');
+    assert.equal(job.schedule.cron, '0 4 * * *');
+    assert.equal(job.watch.mode, 'incremental');
+  }
+  assert.notEqual(created.data[0].destinations[0].id, created.data[1].destinations[0].id);
+  const countDirectories = async () => (await context.request('/api/jobs')).data.filter((job) => job.type === 'directory').length;
+
+  // Any invalid folder or an already-covered folder rejects the whole batch.
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['bbs_azurekiln_cn', 'azurekiln_cn'] } })).status, 409);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['bbs_azurekiln_cn', 'missing_db'] } })).status, 404);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['../escape'] } })).status, 400);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['bbs_azurekiln_cn'], nameTemplate: 'fixed name' } })).status, 400);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['bbs_azurekiln_cn'], template: { ...template, archive: { format: '7z', encrypted: true } } } })).status, 400);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, parentPath: path.dirname(context.config.sourceRoots[0]) } })).status, 403);
+  assert.equal(await countDirectories(), 2);
+  assert.equal((await context.request('/api/jobs/batch', { method: 'POST', body: { ...body, folders: ['bbs_azurekiln_cn'] } })).status, 201);
+  assert.equal(await countDirectories(), 3);
+});
+
 test('watch quick toggle keeps the watch mode and can switch off a missing source', async (t) => {
   const context = await fixture();
   t.after(() => context.close());
