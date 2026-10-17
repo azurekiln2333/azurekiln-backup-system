@@ -27,8 +27,8 @@ export const groupModeLabels: Record<GroupMode, string> = {
 /** Key of the bucket holding jobs that carry no tags. */
 export const UNGROUPED_KEY = '__untagged';
 
-const typeOrder: Job['type'][] = ['directory', 'vaultwarden', 'system'];
-const typeLabels: Record<Job['type'], string> = { directory: '目录备份', vaultwarden: 'Vaultwarden', system: '系统配置' };
+const typeOrder: Job['type'][] = ['directory', 'vaultwarden', 'newapi', 'system'];
+const typeLabels: Record<Job['type'], string> = { directory: '目录备份', vaultwarden: 'Vaultwarden', newapi: 'NewAPI', system: '系统配置' };
 
 /** Parent directory of a path, or '' when there is none. Browser-safe (no node:path). */
 export function dirname(value: string) {
