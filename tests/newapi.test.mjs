@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../server/config.mjs';
 import { jobSchema, newJob } from '../shared/contracts.mjs';
 import {
-  buildRestoreDocument, mysqlDumpArguments, mysqlOptionFile, newApiScopeWarnings, newApiSecrets,
-  pgDumpEnvironment, prepareNewApi, sqliteTableDigests, validateNewApiJob,
+  buildRestoreDocument, digestOrderColumns, mysqlDumpArguments, mysqlOptionFile, newApiScopeWarnings, newApiSecrets,
+  pgDumpEnvironment, prepareNewApi, sqliteTableDigests, tableDigest, validateNewApiJob,
 } from '../server/newapi.mjs';
 
 // A tiny new-api shaped schema: enough tables to prove table-by-table fidelity without a live server.
@@ -279,7 +279,12 @@ test('round trip: restoring into an empty directory reproduces every table exact
     const digests = sqliteTableDigests(path.join(restoredData, 'one-api.db'));
     assert.deepEqual(digests.map((table) => table.name).sort(), manifest.mainDatabase.tables.map((table) => table.name).sort());
     for (const expected of manifest.mainDatabase.tables) {
+      // A null digest must fail loudly instead of comparing null to null.
+      assert.ok(expected.sha256, `${expected.name} must carry a content digest`);
+      assert.match(expected.sha256, /^[\da-f]{64}$/);
       const actual = digests.find((table) => table.name === expected.name);
+      assert.ok(actual, `${expected.name} must exist after restore`);
+      assert.ok(actual.sha256, `${expected.name} must carry a content digest after restore`);
       assert.equal(actual.rows, expected.rows, `${expected.name} row count must match`);
       assert.equal(actual.sha256, expected.sha256, `${expected.name} content hash must match`);
     }
@@ -302,6 +307,56 @@ test('round trip: restoring into an empty directory reproduces every table exact
     assert.equal(existsSync(path.join(restoredData, 'new-api-body-cache')), false);
     assert.match(await readFile(path.join(restored, '.env'), 'utf8'), /CRYPTO_SECRET=super-secret-crypto/);
   } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
+});
+
+test('digest: WITHOUT ROWID tables still get a stable content hash', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'azurekiln-newapi-digest-'));
+  const file = path.join(root, 'wi.db');
+  const db = new DatabaseSync(file);
+  try {
+    // A WITHOUT ROWID table has no rowid column; ordering by it used to throw.
+    db.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID');
+    db.exec("INSERT INTO kv VALUES ('b','2'),('a','1'),('c','3')");
+    db.exec('CREATE TABLE plain (id INTEGER PRIMARY KEY, v TEXT)');
+    db.exec("INSERT INTO plain VALUES (2,'two'),(1,'one')");
+    // A table with no usable key at all must still hash deterministically.
+    db.exec('CREATE TABLE nokey (x TEXT, y TEXT)');
+    db.exec("INSERT INTO nokey VALUES ('p','q'),('r','s')");
+
+    assert.deepEqual(digestOrderColumns(db, 'kv'), ['k']);
+    assert.deepEqual(digestOrderColumns(db, 'plain'), ['id']);
+    assert.deepEqual(digestOrderColumns(db, 'nokey'), ['rowid']);
+
+    const kv = tableDigest(db, 'kv');
+    assert.equal(kv.rows, 3);
+    assert.match(kv.sha256, /^[\da-f]{64}$/, 'WITHOUT ROWID must produce a digest, not null');
+    assert.equal(kv.orderedBy, 'k');
+
+    // The digest must not depend on insertion order.
+    db.exec("DELETE FROM kv");
+    db.exec("INSERT INTO kv VALUES ('c','3'),('a','1'),('b','2')");
+    assert.equal(tableDigest(db, 'kv').sha256, kv.sha256);
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('digest: every sqlite table yields a non-null sha256', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'azurekiln-newapi-digest2-'));
+  const file = path.join(root, 'all.db');
+  const db = new DatabaseSync(file);
+  try {
+    db.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID');
+    db.exec("INSERT INTO kv VALUES ('a','1')");
+    db.exec('CREATE TABLE logs (id INTEGER PRIMARY KEY, quota INTEGER)');
+    db.exec('INSERT INTO logs VALUES (1, 100)');
+  } finally { db.close(); }
+  try {
+    const digests = sqliteTableDigests(file);
+    assert.deepEqual(digests.map((table) => table.name).sort(), ['kv', 'logs']);
+    for (const entry of digests) {
+      assert.ok(entry.sha256, `${entry.name} must not degrade to a null digest`);
+      assert.match(entry.sha256, /^[\da-f]{64}$/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('buildRestoreDocument reflects clickhouse and excluded logs', () => {

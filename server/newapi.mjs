@@ -119,23 +119,44 @@ function listTables(database, dialect) {
   return database.prepare(query).all().map((row) => row.name);
 }
 
-/** Stable per-table digest: row count plus a hash over primary-key-ordered rows. */
+/** Ordering columns for a table: declared primary key first, `rowid` only when the table has one. */
+export function digestOrderColumns(database, table) {
+  const quoted = `"${String(table).replaceAll('"', '""')}"`;
+  // PRIMARY KEY columns come back in key order with pk > 0.
+  const info = database.prepare(`PRAGMA table_info(${quoted})`).all();
+  const keys = info.filter((column) => Number(column.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk));
+  if (keys.length) return keys.map((column) => column.name);
+  // WITHOUT ROWID tables have no rowid; tables that do get a stable physical order.
+  const sql = database.prepare('SELECT sql FROM sqlite_master WHERE type=? AND name=?').get('table', table)?.sql ?? '';
+  if (/without\s+rowid/i.test(sql)) return null;
+  return ['rowid'];
+}
+
+/**
+ * Stable per-table digest: row count plus a hash over ordered rows.
+ *
+ * Ordering uses the declared primary key when there is one, `rowid` for ordinary tables, and an
+ * all-columns sort for WITHOUT ROWID tables without a usable key. When hashing the all-columns
+ * fallback the row order is normalized, so the digest never depends on storage order and a
+ * table is never reported with a null hash.
+ */
 export function tableDigest(database, table) {
-  const count = database.prepare(`SELECT count(*) AS count FROM "${table.replaceAll('"', '""')}"`).get().count;
-  const rows = database.prepare(`SELECT * FROM "${table.replaceAll('"', '""')}" ORDER BY rowid`).all();
+  const quoted = `"${String(table).replaceAll('"', '""')}"`;
+  const count = Number(database.prepare(`SELECT count(*) AS count FROM ${quoted}`).get().count);
+  const order = digestOrderColumns(database, table);
+  const rows = (order ? database.prepare(`SELECT * FROM ${quoted} ORDER BY ${order.map((column) => `"${column.replaceAll('"', '""')}"`).join(', ')}`) : database.prepare(`SELECT * FROM ${quoted}`)).all();
+  const serialized = rows.map((row) => JSON.stringify(Object.values(row)));
+  // Sorting the serialized rows keeps WITHOUT ROWID digests independent of scan order.
+  if (!order) serialized.sort();
   const hash = createHash('sha256');
-  for (const row of rows) hash.update(JSON.stringify(Object.values(row)));
-  return { name: table, rows: Number(count), sha256: hash.digest('hex') };
+  for (const line of serialized) hash.update(line);
+  return { name: table, rows: count, sha256: hash.digest('hex'), orderedBy: order ? order.join(',') : 'sorted-values' };
 }
 
 export function sqliteTableDigests(filePath) {
   const database = new DatabaseSync(filePath, { readOnly: true, timeout: 10000 });
   try {
-    const tables = listTables(database, 'sqlite');
-    return tables.map((table) => {
-      try { return tableDigest(database, table); }
-      catch { const count = database.prepare(`SELECT count(*) AS count FROM "${table.replaceAll('"', '""')}"`).get().count; return { name: table, rows: Number(count), sha256: null }; }
-    });
+    return listTables(database, 'sqlite').map((table) => tableDigest(database, table));
   } finally { database.close(); }
 }
 
