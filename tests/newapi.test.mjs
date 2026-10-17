@@ -1,0 +1,324 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import os from 'node:os';
+import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { loadConfig } from '../server/config.mjs';
+import { jobSchema, newJob } from '../shared/contracts.mjs';
+import {
+  buildRestoreDocument, mysqlDumpArguments, mysqlOptionFile, newApiScopeWarnings, newApiSecrets,
+  pgDumpEnvironment, prepareNewApi, sqliteTableDigests, validateNewApiJob,
+} from '../server/newapi.mjs';
+
+// A tiny new-api shaped schema: enough tables to prove table-by-table fidelity without a live server.
+const NEWAPI_TABLES = {
+  users: `CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, password TEXT, quota INTEGER, used_quota INTEGER, aff_quota INTEGER, aff_history INTEGER, role INTEGER, status INTEGER, `+"`group`"+` TEXT)`,
+  tokens: `CREATE TABLE tokens (id INTEGER PRIMARY KEY, user_id INTEGER, `+"`key`"+` TEXT, name TEXT, remain_quota INTEGER, used_quota INTEGER, unlimited_quota NUMERIC)`,
+  channels: `CREATE TABLE channels (id INTEGER PRIMARY KEY, type INTEGER, name TEXT, `+"`key`"+` TEXT, base_url TEXT, model_mapping TEXT, `+"`group`"+` TEXT, priority INTEGER)`,
+  options: `CREATE TABLE options (`+"`key`"+` TEXT PRIMARY KEY, value TEXT)`,
+  logs: `CREATE TABLE logs (id INTEGER PRIMARY KEY, user_id INTEGER, created_at INTEGER, model_name TEXT, quota INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER, channel_id INTEGER, `+"`group`"+` TEXT, ip TEXT, other TEXT)`,
+  topups: `CREATE TABLE topups (id INTEGER PRIMARY KEY, user_id INTEGER, amount INTEGER, trade_no TEXT, status TEXT)`,
+  redemptions: `CREATE TABLE redemptions (id INTEGER PRIMARY KEY, `+"`key`"+` TEXT, status INTEGER, quota INTEGER)`,
+  setups: `CREATE TABLE setups (id INTEGER PRIMARY KEY, version TEXT, initialized_at INTEGER)`,
+};
+
+function seedDatabase(filePath) {
+  const db = new DatabaseSync(filePath);
+  try {
+    for (const sql of Object.values(NEWAPI_TABLES)) db.exec(sql);
+    db.exec(`INSERT INTO users VALUES (1,'root','$2a$10$hash',100000000,4242,100,20,100,1,'default'),(2,'测试用户','$2a$10$hash2',500,12,0,0,1,1,'vip')`);
+    db.exec(`INSERT INTO tokens VALUES (1,1,'sk-aaaaaaaaaaaaaaaa','默认令牌',900,100,1),(2,2,'sk-bbbbbbbbbbbbbbbb','VIP 令牌',400,50,0)`);
+    db.exec(`INSERT INTO channels VALUES (1,1,'OpenAI 主渠道','sk-upstream-secret-1','https://api.example.com','{"gpt-4":"gpt-4-turbo"}','default',0)`);
+    db.exec(`INSERT INTO options VALUES ('SystemName','测试站点'),('QuotaPerUnit','500000'),('ModelPrice','{"gpt-4":0.03}')`);
+    db.exec(`INSERT INTO logs VALUES (1,1,1730000000,'gpt-4',1200,800,400,1,'default','10.0.0.1','{"stream":true}'),(2,2,1730000100,'claude-3',300,100,200,1,'vip','10.0.0.2','{}'),(3,1,1730000200,'gpt-4',1500,900,600,1,'default','10.0.0.3','{}')`);
+    db.exec(`INSERT INTO topups VALUES (1,1,1000,'trade-中文-001','success')`);
+    db.exec(`INSERT INTO redemptions VALUES (1,'redeem-abc',1,500)`);
+    db.exec(`INSERT INTO setups VALUES (1,'v0.test',1730000000)`);
+  } finally { db.close(); }
+}
+
+async function makeWorkspace() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-newapi-'));
+  const sources = path.join(root, 'sources');
+  const dataDir = path.join(sources, 'new-api', 'data');
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(path.join(dataDir, 'new-api-body-cache'), { recursive: true });
+  await writeFile(path.join(dataDir, 'new-api-body-cache', 'cache.bin'), 'regenerable');
+  await writeFile(path.join(dataDir, 'readme-data.txt'), 'keep me');
+  await writeFile(path.join(dataDir, 'one-api.db-wal'), 'stale wal');
+  seedDatabase(path.join(dataDir, 'one-api.db'));
+  const envFile = path.join(sources, 'new-api', '.env');
+  await writeFile(envFile, 'SQL_DSN=\nCRYPTO_SECRET=super-secret-crypto\nSESSION_SECRET=super-secret-session\nREDIS_CONN_STRING=redis://:pw@redis:6379\n');
+  const config = loadConfig({ DATA_DIR: path.join(root, 'state'), SOURCE_ROOTS: JSON.stringify([sources]) }, root);
+  return { root, sources, dataDir, envFile, config, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+
+function baseJob(workspace, patch = {}) {
+  return jobSchema.parse({
+    name: 'new-api 全量',
+    type: 'newapi',
+    enabled: false,
+    destinations: [{ remote: 'test', path: 'newapi' }],
+    archive: { format: '7z', encrypted: true, password: 'archive-pass' },
+    newapi: {
+      dataDir: workspace.dataDir,
+      envFilePath: workspace.envFile,
+      database: { password: 'db-pass' },
+      logDatabase: { password: 'log-pass' },
+      ...patch,
+    },
+  });
+}
+
+async function collectPayload(directory) {
+  const out = [];
+  async function walk(current) {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else out.push(path.relative(directory, full).split(path.sep).join('/'));
+    }
+  }
+  await walk(directory);
+  return out.sort();
+}
+
+test('newapi job type is part of the contract with a complete default block', () => {
+  const job = newJob('newapi');
+  assert.equal(job.type, 'newapi');
+  assert.equal(job.newapi.dbType, 'sqlite');
+  assert.equal(job.newapi.logDbType, 'same');
+  assert.equal(job.newapi.includeLogTable, true);
+  assert.equal(job.newapi.includeLogs, false);
+  assert.deepEqual(job.newapi.database, { host: '', name: '', username: '', sslMode: 'default', sslCa: '', sslCert: '', sslKey: '' });
+  assert.ok(jobSchema.safeParse({ name: 'x', type: 'newapi' }).success);
+  assert.equal(jobSchema.shape.type.safeParse('newapi').success, true);
+  // Old tasks without a newapi block keep parsing.
+  assert.deepEqual(jobSchema.parse({ name: 'old' }).newapi, newJob('newapi').newapi);
+});
+
+test('validateNewApiJob sandboxes every path and requires an encrypted 7z archive', async () => {
+  const workspace = await makeWorkspace();
+  try {
+    const job = baseJob(workspace);
+    validateNewApiJob(job, workspace.config);
+    assert.equal(job.newapi.dataDir, workspace.dataDir);
+    assert.equal(job.sourcePath, workspace.dataDir);
+    assert.equal(job.newapi.sqlitePath, path.join(workspace.dataDir, 'one-api.db'));
+
+    assert.throws(() => validateNewApiJob(baseJob(workspace, { envFilePath: '' }), workspace.config), { code: 'NEWAPI_ENV_REQUIRED' });
+    assert.throws(() => validateNewApiJob(baseJob(workspace, { dataDir: 'relative/path' }), workspace.config), /absolute source path/);
+    assert.throws(() => validateNewApiJob(baseJob(workspace, { dataDir: path.join(os.tmpdir(), 'outside') }), workspace.config), { code: 'SOURCE_PATH_FORBIDDEN' });
+
+    const plaintext = baseJob(workspace);
+    plaintext.archive.encrypted = false;
+    assert.throws(() => validateNewApiJob(plaintext, workspace.config), { code: 'NEWAPI_ARCHIVE_REQUIRED' });
+    const targz = baseJob(workspace);
+    targz.archive.format = 'tar.gz';
+    targz.archive.encrypted = false;
+    assert.throws(() => validateNewApiJob(targz, workspace.config), { code: 'NEWAPI_ARCHIVE_REQUIRED' });
+
+    const remote = baseJob(workspace);
+    remote.newapi.dbType = 'mysql';
+    assert.throws(() => validateNewApiJob(remote, workspace.config), { code: 'NEWAPI_DATABASE_INVALID' });
+    remote.newapi.database = { host: 'db', name: 'new-api', username: 'root', port: undefined };
+    validateNewApiJob(remote, workspace.config);
+    assert.equal(remote.newapi.database.port, 3306);
+
+    const multiline = baseJob(workspace);
+    multiline.newapi.dbType = 'postgresql';
+    multiline.newapi.database = { host: 'db', name: 'new-api\nDROP', username: 'root' };
+    assert.throws(() => validateNewApiJob(multiline, workspace.config), { code: 'NEWAPI_DATABASE_INVALID' });
+
+    const clickhouse = baseJob(workspace);
+    clickhouse.newapi.logDbType = 'clickhouse';
+    clickhouse.newapi.logDatabase = { host: 'clickhouse', name: 'new_api_logs' };
+    validateNewApiJob(clickhouse, workspace.config);
+    assert.equal(clickhouse.newapi.logDatabase.port, 8123);
+    assert.match(newApiScopeWarnings(clickhouse).join(' '), /not exported automatically/);
+
+    // Watching is never allowed for newapi tasks.
+    const watching = baseJob(workspace);
+    watching.watch.enabled = true;
+    validateNewApiJob(watching, workspace.config);
+    assert.equal(watching.watch.enabled, false);
+  } finally { await workspace.cleanup(); }
+});
+
+test('symbolic-link data directories are rejected', { skip: process.platform === 'win32' }, async () => {
+  const workspace = await makeWorkspace();
+  try {
+    const link = path.join(workspace.sources, 'linked');
+    await symlink(workspace.dataDir, link);
+    assert.throws(() => validateNewApiJob(baseJob(workspace, { dataDir: link }), workspace.config), { code: 'SOURCE_SYMLINK_FORBIDDEN' });
+  } finally { await workspace.cleanup(); }
+});
+
+test('MySQL and PostgreSQL command construction never leaks credentials into argv', () => {
+  const args = mysqlDumpArguments('new-api');
+  assert.deepEqual(args.slice(-2), ['--', 'new-api']);
+  assert.ok(args.includes('--single-transaction'));
+  assert.ok(args.includes('--quick'));
+  assert.ok(args.includes('--skip-lock-tables'));
+  assert.ok(!args.some((arg) => arg.includes('secret')));
+  assert.ok(mysqlDumpArguments('new-api', { includeLogTable: false }).includes('--ignore-table=new-api.logs'));
+
+  const cnf = mysqlOptionFile({ host: 'db', port: 3307, username: 'root', password: 'pa"ss\\word\nnext', sslMode: 'require' });
+  assert.match(cnf, /^\[client\]/);
+  assert.match(cnf, /password="pa\\"ss\\\\word\\nnext"/);
+  assert.match(cnf, /ssl-verify-server-cert=1/);
+  assert.ok(!cnf.includes('\nnext'));
+
+  const env = pgDumpEnvironment({ host: 'pg', name: 'new-api', username: 'root', password: 'pg-secret', port: 5433, sslMode: 'require' }, { sslCa: '/certs/ca.pem' });
+  assert.equal(env.PGPASSWORD, 'pg-secret');
+  assert.equal(env.PGPORT, '5433');
+  assert.equal(env.PGSSLMODE, 'require');
+  assert.equal(env.PGSSLROOTCERT, '/certs/ca.pem');
+  assert.equal(pgDumpEnvironment({ host: 'pg', name: 'n', username: 'u' }).PGSSLMODE, undefined);
+});
+
+test('secrets list covers archive, main and log database passwords', () => {
+  const secrets = newApiSecrets({ archive: { password: 'a' }, newapi: { database: { password: 'b' }, logDatabase: { password: 'c' } } });
+  assert.deepEqual(secrets, ['a', 'b', 'c']);
+  assert.deepEqual(newApiSecrets({ archive: {}, newapi: {} }), []);
+});
+
+test('prepareNewApi builds a restorable payload with a verified manifest', async () => {
+  const workspace = await makeWorkspace();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-newapi-payload-'));
+  try {
+    const stage = path.join(root, 'stage');
+    const payload = path.join(stage, 'payload');
+    await mkdir(payload, { recursive: true });
+    const job = baseJob(workspace);
+    validateNewApiJob(job, workspace.config);
+    const run = { progress: null };
+    const lines = [];
+    const result = await prepareNewApi({
+      job, payload, stage, stamp: '20261018T000000Z', signal: new AbortController().signal,
+      secrets: newApiSecrets(job), runId: 'run-1', config: workspace.config,
+      log: (_id, message) => lines.push(message),
+      update: (_id, patch) => Object.assign(run, patch),
+    });
+
+    const manifest = JSON.parse(await readFile(path.join(payload, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.kind, 'azurekiln-newapi-backup');
+    assert.equal(manifest.mainDatabase.type, 'sqlite');
+    assert.equal(manifest.mainDatabase.integrity, 'ok');
+    assert.equal(manifest.mainDatabase.logsIncluded, true);
+    assert.equal(manifest.logDatabase.type, 'same');
+    assert.ok(manifest.files.some((file) => file.path === 'config/env'));
+    assert.ok(manifest.warnings.length > 0);
+    assert.deepEqual(result.warnings, manifest.warnings);
+
+    // Manifest must describe the real tables and row counts, and never contain a password.
+    const names = manifest.mainDatabase.tables.map((table) => table.name).sort();
+    assert.deepEqual(names, Object.keys(NEWAPI_TABLES).sort());
+    const users = manifest.mainDatabase.tables.find((table) => table.name === 'users');
+    assert.equal(users.rows, 2);
+    const logs = manifest.mainDatabase.tables.find((table) => table.name === 'logs');
+    assert.equal(logs.rows, 3);
+    assert.match(users.sha256, /^[\da-f]{64}$/);
+
+    const manifestText = await readFile(path.join(payload, 'manifest.json'), 'utf8');
+    for (const secret of ['archive-pass', 'db-pass', 'log-pass', 'super-secret-crypto', 'super-secret-session']) {
+      assert.ok(!manifestText.includes(secret), `manifest must not contain ${secret}`);
+    }
+    for (const line of lines) assert.ok(!line.includes('super-secret-crypto'));
+
+    // Extraction layout: consistent snapshot, deployment config, data dir without cache/WAL.
+    const files = await collectPayload(payload);
+    assert.ok(files.includes('db/main.sqlite3'));
+    assert.ok(files.includes('config/env'));
+    assert.ok(files.includes('data/readme-data.txt'));
+    assert.ok(!files.some((file) => file.includes('new-api-body-cache')), 'body cache must be excluded');
+    assert.ok(!files.some((file) => file.endsWith('.db-wal')), 'WAL files must be excluded');
+    assert.ok(!files.some((file) => file === 'data/one-api.db'), 'live database must not be copied as data');
+
+    const restore = await readFile(path.join(payload, 'RESTORE.md'), 'utf8');
+    assert.match(restore, /new-api 还原步骤/);
+    assert.match(restore, /one-api\.db/);
+    assert.match(restore, /\| logs \| 3 \|/);
+    assert.ok(!restore.includes('db-pass'));
+
+    // Snapshot must be a standalone file with no journal sibling.
+    assert.equal(existsSync(path.join(payload, 'db', 'main.sqlite3')), true);
+    assert.equal(existsSync(path.join(payload, 'db', 'main.sqlite3-wal')), false);
+    const snapshotBytes = (await stat(path.join(payload, 'db', 'main.sqlite3'))).size;
+    assert.equal(manifest.mainDatabase.exportBytes, snapshotBytes);
+  } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
+});
+
+test('round trip: restoring into an empty directory reproduces every table exactly', async () => {
+  const workspace = await makeWorkspace();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-newapi-roundtrip-'));
+  try {
+    const stage = path.join(root, 'stage');
+    const payload = path.join(stage, 'payload');
+    await mkdir(payload, { recursive: true });
+    const job = baseJob(workspace);
+    validateNewApiJob(job, workspace.config);
+    await prepareNewApi({
+      job, payload, stage, stamp: '20261018T000000Z', signal: new AbortController().signal,
+      secrets: newApiSecrets(job), runId: 'run-2', config: workspace.config,
+      log: () => {}, update: () => {},
+    });
+    const manifest = JSON.parse(await readFile(path.join(payload, 'manifest.json'), 'utf8'));
+
+    // Simulate the target machine: a brand-new empty data directory plus the archived .env.
+    const restored = path.join(root, 'restored');
+    const restoredData = path.join(restored, 'data');
+    await mkdir(restoredData, { recursive: true });
+    await writeFile(path.join(restoredData, 'one-api.db'), await readFile(path.join(payload, 'db', 'main.sqlite3')));
+    await writeFile(path.join(restored, '.env'), await readFile(path.join(payload, 'config', 'env')));
+    const { cp } = await import('node:fs/promises');
+    await cp(path.join(payload, 'data'), restoredData, { recursive: true, force: true });
+
+    const digests = sqliteTableDigests(path.join(restoredData, 'one-api.db'));
+    assert.deepEqual(digests.map((table) => table.name).sort(), manifest.mainDatabase.tables.map((table) => table.name).sort());
+    for (const expected of manifest.mainDatabase.tables) {
+      const actual = digests.find((table) => table.name === expected.name);
+      assert.equal(actual.rows, expected.rows, `${expected.name} row count must match`);
+      assert.equal(actual.sha256, expected.sha256, `${expected.name} content hash must match`);
+    }
+
+    // Content spot checks: configuration, keys, consumption and audit rows all survive.
+    const db = new DatabaseSync(path.join(restoredData, 'one-api.db'), { readOnly: true });
+    try {
+      assert.equal(db.prepare('PRAGMA integrity_check').get()['integrity_check'], 'ok');
+      assert.equal(db.prepare("SELECT value FROM options WHERE key='SystemName'").get().value, '测试站点');
+      assert.match(db.prepare('SELECT `key` FROM channels WHERE id=1').get().key, /sk-upstream-secret-1/);
+      assert.equal(db.prepare('SELECT sum(prompt_tokens) AS total FROM logs').get().total, 1800);
+      assert.equal(db.prepare('SELECT sum(completion_tokens) AS total FROM logs').get().total, 1200);
+      assert.equal(db.prepare('SELECT sum(quota) AS total FROM logs').get().total, 3000);
+      assert.equal(db.prepare('SELECT trade_no FROM topups WHERE id=1').get().trade_no, 'trade-中文-001');
+      assert.equal(db.prepare('SELECT version FROM setups').get().version, 'v0.test');
+    } finally { db.close(); }
+
+    // Files restored alongside the database and the excluded cache staying out.
+    assert.equal(existsSync(path.join(restoredData, 'readme-data.txt')), true);
+    assert.equal(existsSync(path.join(restoredData, 'new-api-body-cache')), false);
+    assert.match(await readFile(path.join(restored, '.env'), 'utf8'), /CRYPTO_SECRET=super-secret-crypto/);
+  } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
+});
+
+test('buildRestoreDocument reflects clickhouse and excluded logs', () => {
+  const document = buildRestoreDocument({
+    generatedAt: '2026-10-18T00:00:00.000Z',
+    appVersion: { image: 'calciumion/new-api:v0.9.9' },
+    array: undefined,
+    mainDatabase: { type: 'postgresql', database: 'new-api', exportFile: 'db/main.dump', logsIncluded: false, tables: [{ name: 'users', rows: 3 }] },
+    logDatabase: { type: 'clickhouse', database: 'new_api_logs', exported: false },
+    files: [{ path: 'config/env' }],
+    warnings: ['logs table excluded'],
+    archiveName: 'newapi.7z',
+  });
+  assert.match(document, /newapi\.7z/);
+  assert.match(document, /pg_restore/);
+  assert.match(document, /ClickHouse/);
+  assert.match(document, /SELECT \* FROM logs FORMAT Native/);
+  assert.match(document, /\*\*未包含\*\*/);
+  assert.match(document, /logs table excluded/);
+});
