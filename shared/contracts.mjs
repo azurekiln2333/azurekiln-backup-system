@@ -16,9 +16,15 @@ const exclusionPattern = z.string().max(512).refine(
   'Use literal paths with * or ? wildcards; extended glob syntax is not supported.',
 );
 
+// Tags are free-form labels for grouping tasks; duplicates are removed case-insensitively, keeping the first spelling.
+const tagList = z.array(z.string().trim().min(1).max(32).refine((value) => !/[,\r\n\0]/.test(value), '标签不能包含逗号或换行。'))
+  .max(10).default([])
+  .transform((tags) => tags.filter((tag, index) => tags.findIndex((other) => other.toLowerCase() === tag.toLowerCase()) === index));
+
 export const jobSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).default(''),
+  tags: tagList,
   type: z.enum(['directory', 'vaultwarden', 'system']).default('directory'),
   enabled: z.boolean().default(true),
   sourcePath: z.string().trim().default(''),
@@ -78,6 +84,18 @@ export const jobSchema = z.object({
       sslKey: z.string().default(''),
     }).default({}),
   }).default({}),
+});
+
+// Batch creation: one directory task per selected child folder of parentPath, sharing every other setting.
+export const batchFolderName = z.string().min(1).max(255).refine(
+  (value) => value.trim() === value && !['.', '..'].includes(value) && !/[\\/:\0\r\n]/.test(value),
+  '子目录名称无效。',
+);
+export const batchJobSchema = z.object({
+  parentPath: z.string().trim().min(1).max(1024),
+  folders: z.array(batchFolderName).min(1).max(100).refine((items) => new Set(items).size === items.length, '子目录不能重复。'),
+  nameTemplate: z.string().trim().min(1).max(100).refine((value) => value.includes('{folder}'), '任务名称模板必须包含 {folder}。').default('{folder}'),
+  template: z.record(z.unknown()),
 });
 
 export const settingsSchema = z.object({

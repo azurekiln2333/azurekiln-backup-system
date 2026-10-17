@@ -4,10 +4,11 @@ import { z, ZodError } from 'zod';
 import { readdirSync, existsSync, lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { jobSchema, settingsSchema } from '../shared/contracts.mjs';
+import { batchJobSchema, jobSchema, settingsSchema } from '../shared/contracts.mjs';
 import { AppError, isWithin, loadConfig, resolveSourcePath } from './config.mjs';
 import { createStore, mergeConfig, SYSTEM_JOB_ID } from './store.mjs';
 import { createAuth } from './auth.mjs';
+import { createTokens } from './tokens.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
 import { createWatcher } from './watcher.mjs';
 
@@ -89,6 +90,7 @@ export async function createApp(options = {}) {
   }
   const scheduler = options.scheduler || (await import('./scheduler.mjs')).createScheduler({ store, backupService });
   const watcher = options.watcher || createWatcher({ store, config, backupService });
+  const tokens = options.tokens || createTokens({ store, config });
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -97,7 +99,7 @@ export async function createApp(options = {}) {
   });
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
-  const auth = createAuth({ store, config });
+  const auth = createAuth({ store, config, tokens });
   app.use('/api', auth.identify);
   app.get('/api/auth/status', auth.status);
   app.post('/api/auth/setup', auth.checkOrigin, wrap(auth.setup));
@@ -105,7 +107,14 @@ export async function createApp(options = {}) {
   app.post('/api/auth/logout', auth.requireAuth, auth.checkOrigin, auth.csrf, auth.logout);
   app.get('/api/auth/oidc/start', wrap(auth.start));
   app.get('/api/auth/oidc/callback', wrap(auth.callback));
-  app.use('/api', auth.requireAuth, auth.checkOrigin, auth.csrf);
+  // Token management is mounted before the blanket guard so it is reachable only with an
+  // administrator session: a Bearer principal can never mint, edit, or revoke tokens.
+  app.use('/api/tokens', auth.requireSession, auth.checkOrigin, auth.csrf);
+  app.get('/api/tokens', (_req, res) => res.json(tokens.list()));
+  app.post('/api/tokens', wrap((req, res) => res.status(201).json(tokens.create(req.body))));
+  app.patch('/api/tokens/:id', wrap((req, res) => res.json(tokens.update(req.params.id, req.body))));
+  app.delete('/api/tokens/:id', wrap((req, res) => { tokens.remove(req.params.id); res.status(204).end(); }));
+  app.use('/api', auth.requireAuth, auth.tokenGuard, auth.checkOrigin, auth.csrf);
 
   const getJob = (id) => {
     const job = store.getJob(id);
@@ -120,6 +129,30 @@ export async function createApp(options = {}) {
     scheduler.refresh();
     watcher.refresh();
     res.status(201).json(store.getJob(saved.id));
+  }));
+  app.post('/api/jobs/batch', wrap(async (req, res) => {
+    const input = batchJobSchema.parse(req.body);
+    const parentPath = resolveSourcePath(config, input.parentPath, { directory: true });
+    const existing = new Set(store.listJobs().filter((job) => job.type === 'directory').map((job) => job.sourcePath));
+    // Validate every task before saving any, so a bad folder never leaves a partial batch behind.
+    const jobs = input.folders.map((folder) => {
+      const sourcePath = path.join(parentPath, folder);
+      const template = { ...input.template, type: 'directory' };
+      const job = validateJob({
+        ...template,
+        name: input.nameTemplate.replaceAll('{folder}', folder),
+        sourcePath,
+        destinations: (Array.isArray(template.destinations) ? template.destinations : []).map((destination) => ({
+          remote: destination?.remote, path: [String(destination?.path ?? '').replace(/\/+$/, ''), folder].filter(Boolean).join('/'),
+        })),
+      }, config);
+      if (existing.has(job.sourcePath)) throw new AppError(`A directory task already backs up ${folder}.`, 409, 'JOB_SOURCE_EXISTS');
+      return job;
+    });
+    const created = jobs.map((job) => store.getJob(store.saveJob(job).id));
+    scheduler.refresh();
+    watcher.refresh();
+    res.status(201).json(created);
   }));
   app.get('/api/jobs/:id', wrap((req, res) => res.json(getJob(req.params.id))));
   app.patch('/api/jobs/:id', wrap((req, res) => {
@@ -288,7 +321,7 @@ export async function createApp(options = {}) {
   });
   scheduler.start();
   watcher.start();
-  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); if (!options.store) store.close(); };
+  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); tokens.close(); if (!options.store) store.close(); };
   return { app, store, config, backupService, rclone, scheduler, watcher, close };
 }
 

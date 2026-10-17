@@ -124,11 +124,11 @@ export function createStore(config) {
       return store.getJob(SYSTEM_JOB_ID);
     },
     listJobs({ includeSecrets = false } = {}) {
-      return db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map((row) => ({ description: '', ...decode(row.data, jobSecrets, includeSecrets) }));
+      return db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map((row) => ({ description: '', tags: [], ...decode(row.data, jobSecrets, includeSecrets) }));
     },
     getJob(id, { includeSecrets = false } = {}) {
       const row = db.prepare('SELECT data FROM jobs WHERE id=?').get(id);
-      return row ? { description: '', ...decode(row.data, jobSecrets, includeSecrets) } : null;
+      return row ? { description: '', tags: [], ...decode(row.data, jobSecrets, includeSecrets) } : null;
     },
     saveJob(input, id) {
       const previous = id ? store.getJob(id, { includeSecrets: true }) : null;
