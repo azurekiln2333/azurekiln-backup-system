@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { FolderOpen } from 'lucide-vue-next';
 import type { JobInput } from '../types';
 
@@ -38,11 +39,17 @@ function defaultPort(type: Database extends never ? never : string) {
 function setDbType(value: NewApi['dbType']) {
   props.modelValue.dbType = value;
   props.modelValue.database.port = defaultPort(value);
+  // A SQLite snapshot is a single file, so logs can never be excluded from it.
+  if (value === 'sqlite' && props.modelValue.logDbType !== 'same') props.modelValue.logDbType = 'same';
+  if (value === 'sqlite' || props.modelValue.logDbType === 'sqlite') props.modelValue.includeLogTable = true;
 }
 function setLogDbType(value: NewApi['logDbType']) {
   props.modelValue.logDbType = value;
   if (value !== 'same' && value !== 'sqlite') props.modelValue.logDatabase.port = defaultPort(value);
+  if (value === 'sqlite') props.modelValue.includeLogTable = true;
 }
+// The logs table can only be dropped from a dump of a server database.
+const canExcludeLogTable = computed(() => props.modelValue.dbType !== 'sqlite' && props.modelValue.logDbType !== 'sqlite');
 </script>
 
 <template>
@@ -94,7 +101,8 @@ function setLogDbType(value: NewApi['logDbType']) {
   <label class="field">反代配置输入<div class="input-action"><input v-model="modelValue.proxyConfigPath" placeholder="可选：Nginx/Caddy 配置文件或目录" /><button type="button" class="icon-button" title="浏览反代配置" aria-label="浏览反代配置" @click="emit('pick', 'proxyConfigPath')"><FolderOpen :size="18" /></button></div></label>
   <label class="field">插件脚本目录<div class="input-action"><input v-model="modelValue.pluginsPath" placeholder="可选：宿主机挂载的插件目录" /><button type="button" class="icon-button" title="浏览插件目录" aria-label="浏览插件目录" @click="emit('pick', 'pluginsPath')"><FolderOpen :size="18" /></button></div></label>
   <label class="field full">new-api 版本（镜像 tag，用于还原时对齐）<input v-model="modelValue.appVersion" placeholder="例如 calciumion/new-api:v0.9.9" /></label>
-  <label class="check-row full"><input v-model="modelValue.includeLogTable" type="checkbox" />包含 logs 表（消耗额度与 tokens 历史）</label>
+  <label v-if="canExcludeLogTable" class="check-row full"><input v-model="modelValue.includeLogTable" type="checkbox" />包含 logs 表（消耗额度与 tokens 历史）</label>
+  <p v-else class="field full muted">SQLite 快照是单个文件，无法只排除 logs 表，因此始终包含。</p>
   <label class="check-row full"><input v-model="modelValue.includeLogs" type="checkbox" />包含进进程日志 logs/</label>
   <label v-if="modelValue.includeLogs" class="field full">日志目录<div class="input-action"><input v-model="modelValue.logsPath" placeholder="/sources/new-api/logs" /><button type="button" class="icon-button" title="浏览日志目录" aria-label="浏览日志目录" @click="emit('pick', 'logsPath')"><FolderOpen :size="18" /></button></div></label>
   <p class="field full muted">数据目录内的 <code>new-api-body-cache</code>、<code>*.db-wal</code>、<code>*.db-shm</code> 会自动排除；数据库使用在线一致性快照，归档强制 AES-256 加密。</p>

@@ -96,6 +96,11 @@ export function validateNewApiJob(job, config, { allowMissing = false } = {}) {
     api.logsPath = resolveSourcePath(config, api.logsPath, { directory: true, allowMissing });
   } else api.logsPath = '';
   job.watch.enabled = false;
+  // A SQLite snapshot is one file, so a single table cannot be dropped from it. Rejecting the
+  // combination keeps manifest.logsIncluded, the warnings and the UI checkbox from disagreeing.
+  if (!api.includeLogTable && (api.dbType === 'sqlite' || api.logDbType === 'sqlite')) {
+    throw new AppError('A SQLite snapshot cannot exclude a single table. Keep logs included or use MySQL/PostgreSQL for the database that holds them.', 400, 'NEWAPI_LOG_TABLE_REQUIRED');
+  }
   // The archive carries .env and channel keys, so plaintext formats are never acceptable.
   if (job.archive.format !== '7z' || !job.archive.encrypted) throw new AppError('new-api backups contain credentials and must use an encrypted 7z archive.', 400, 'NEWAPI_ARCHIVE_REQUIRED');
   return job;
@@ -106,8 +111,13 @@ export function newApiScopeWarnings(job) {
   const warnings = [];
   const api = job.newapi;
   if (MANUAL_LOG_TYPES.has(api.logDbType)) warnings.push(`The ${api.logDbType} log database is not exported automatically; RESTORE.md contains the manual export command.`);
-  if (!api.includeLogTable) warnings.push('The logs table is excluded; consumption and token history will be missing after restore.');
-  if (api.logDbType === 'same') warnings.push('LOG_SQL_DSN is unset, so log tables are archived together with the main database.');
+  // Only one of these applies, so the two can never contradict each other.
+  if (!api.includeLogTable) {
+    // Reachable only for server databases: validation rejects SQLite with logs excluded.
+    warnings.push('The logs table is excluded; consumption and token history will be missing after restore.');
+  } else if (api.logDbType === 'same') {
+    warnings.push('LOG_SQL_DSN is unset, so the logs table is archived together with the main database.');
+  }
   return warnings;
 }
 

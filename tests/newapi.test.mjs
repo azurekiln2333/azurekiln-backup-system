@@ -165,6 +165,28 @@ test('validateNewApiJob sandboxes every path and requires an encrypted 7z archiv
     watching.watch.enabled = true;
     validateNewApiJob(watching, workspace.config);
     assert.equal(watching.watch.enabled, false);
+
+    // A SQLite snapshot cannot drop a single table, so the combination is refused instead of
+    // silently archiving logs while the manifest claims they were excluded.
+    const sqliteNoLogs = baseJob(workspace);
+    sqliteNoLogs.newapi.includeLogTable = false;
+    assert.throws(() => validateNewApiJob(sqliteNoLogs, workspace.config), { code: 'NEWAPI_LOG_TABLE_REQUIRED' });
+
+    const sqliteLogDb = baseJob(workspace);
+    sqliteLogDb.newapi.logDbType = 'sqlite';
+    sqliteLogDb.newapi.logSqlitePath = path.join(workspace.dataDir, 'one-api-log.db');
+    sqliteLogDb.newapi.includeLogTable = false;
+    assert.throws(() => validateNewApiJob(sqliteLogDb, workspace.config), { code: 'NEWAPI_LOG_TABLE_REQUIRED' });
+
+    // Excluding logs is allowed for a server database, and exactly one warning is emitted.
+    const mysqlNoLogs = baseJob(workspace);
+    mysqlNoLogs.newapi.dbType = 'mysql';
+    mysqlNoLogs.newapi.database = { host: 'db', name: 'new-api', username: 'root' };
+    mysqlNoLogs.newapi.includeLogTable = false;
+    validateNewApiJob(mysqlNoLogs, workspace.config);
+    const mysqlWarnings = newApiScopeWarnings(mysqlNoLogs);
+    assert.equal(mysqlWarnings.filter((warning) => /logs/i.test(warning)).length, 1, mysqlWarnings.join(' | '));
+    assert.match(mysqlWarnings.join(' '), /excluded/);
   } finally { await workspace.cleanup(); }
 });
 
@@ -397,6 +419,28 @@ test('digest: every sqlite table yields a non-null sha256', () => {
       assert.match(entry.sha256, /^[\da-f]{64}$/);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('scope warnings never contradict the archived logs table', async () => {
+  const workspace = await makeWorkspace();
+  try {
+    // Shared log database + logs included: exactly one warning, saying they travel with the main DB.
+    const shared = baseJob(workspace);
+    validateNewApiJob(shared, workspace.config);
+    const sharedWarnings = newApiScopeWarnings(shared);
+    assert.equal(sharedWarnings.filter((warning) => /logs/i.test(warning)).length, 1, sharedWarnings.join(' | '));
+    assert.match(sharedWarnings.join(' '), /archived together with the main database/);
+    assert.ok(!sharedWarnings.some((warning) => /excluded/i.test(warning)), 'must not claim logs were excluded');
+
+    // Separate server log database + logs included: no logs warning at all.
+    const separate = baseJob(workspace);
+    separate.newapi.dbType = 'postgresql';
+    separate.newapi.database = { host: 'db', name: 'new-api', username: 'root' };
+    separate.newapi.logDbType = 'postgresql';
+    separate.newapi.logDatabase = { host: 'db', name: 'new-api-log', username: 'root' };
+    validateNewApiJob(separate, workspace.config);
+    assert.ok(!newApiScopeWarnings(separate).some((warning) => /logs/i.test(warning)));
+  } finally { await workspace.cleanup(); }
 });
 
 test('buildRestoreDocument reflects clickhouse and excluded logs', () => {
