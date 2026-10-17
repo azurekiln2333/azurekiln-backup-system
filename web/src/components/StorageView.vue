@@ -68,7 +68,7 @@ void load();
   </section>
   <section class="page-band">
     <div class="section-heading"><h2>远端存储 <span class="count">{{ remotes.length }}</span></h2></div>
-    <div v-if="!remotes.length" class="empty-state compact"><HardDrive :size="30" /><h3>尚无远端存储</h3><p>{{ loading ? '正在读取…' : !status.available ? '未检测到 rclone,请先安装后再导入配置' : status.configured ? '配置文件已导入,但其中没有可用的远端' : '尚未导入 rclone 配置文件' }}</p><button v-if="!loading && status.available" type="button" class="button secondary small" @click="focusImport"><FileInput :size="15" />导入 rclone 配置</button></div>
+    <div v-if="!remotes.length" class="empty-state compact"><HardDrive :size="30" /><h3>尚无远端存储</h3><p>{{ loading ? '正在读取…' : !status.available ? '未检测到 rclone,请先安装后再导入配置' : status.configured ? '配置文件已导入,但其中没有可用的远端' : '尚未导入 rclone 配置文件' }}</p><button v-if="!loading && status.available" type="button" class="button secondary small" @click="focusImport"><FileInput :size="15" />前往导入配置</button></div>
     <div v-else class="remote-grid">
       <article v-for="remote in remotes" :key="remote.name" class="remote-item"><div class="remote-symbol"><HardDrive :size="24" /></div><div class="remote-meta"><h3>{{ remote.name }}</h3><span>{{ remote.type }}</span></div><button class="icon-button" title="浏览远端目录" aria-label="浏览远端目录" @click="inspecting = remote"><FolderOpen :size="19" /></button></article>
     </div>
