@@ -30,12 +30,6 @@ export const UNGROUPED_KEY = '__untagged';
 const typeOrder: Job['type'][] = ['directory', 'vaultwarden', 'system'];
 const typeLabels: Record<Job['type'], string> = { directory: '目录备份', vaultwarden: 'Vaultwarden', system: '系统配置' };
 
-/** Last path segment, tolerating trailing separators. Browser-safe (no node:path). */
-function basename(value: string) {
-  const trimmed = value.replace(/[\\/]+$/, '');
-  return trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\')) + 1) || trimmed;
-}
-
 /** Parent directory of a path, or '' when there is none. Browser-safe (no node:path). */
 export function dirname(value: string) {
   const trimmed = value.replace(/[\\/]+$/, '');
@@ -158,5 +152,3 @@ export function writeGroupMode(storage: Storage | undefined, mode: GroupMode): v
     // Same reasoning as writeCollapsed.
   }
 }
-
-export { basename as groupBasename };
