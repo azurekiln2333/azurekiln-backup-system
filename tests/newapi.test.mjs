@@ -7,10 +7,31 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../server/config.mjs';
 import { jobSchema, newJob } from '../shared/contracts.mjs';
+import { archiveArguments } from '../server/backup.mjs';
+import { runProcess } from '../server/process.mjs';
 import {
   buildRestoreDocument, digestOrderColumns, mysqlDumpArguments, mysqlOptionFile, newApiScopeWarnings, newApiSecrets,
   pgDumpEnvironment, prepareNewApi, sqliteTableDigests, tableDigest, validateNewApiJob,
 } from '../server/newapi.mjs';
+
+const sevenZipBinary = process.env.SEVEN_ZIP_BINARY || (process.platform === 'win32' ? path.resolve('.artifacts/tools/7zip/x64/7za.exe') : '7z');
+// Real archive round trips need the actual 7-Zip binary; skip them on hosts without it.
+const liveSevenZip = existsSync(sevenZipBinary);
+const ARCHIVE_PASSWORD = 'roundtrip-archive-pass';
+
+/** Pack the payload exactly the way a run does, using backup.mjs' own argument builder. */
+async function packArchive({ payload, archivePath, format = '7z', encrypted = true, password = ARCHIVE_PASSWORD }) {
+  const archive = { format, level: 5, method: 'lzma2', threads: 0, dictionaryMiB: 0, encrypted, password };
+  await runProcess(sevenZipBinary, archiveArguments(archive, archivePath), { cwd: payload, secrets: [password] });
+  return archivePath;
+}
+
+/** Extract an archive into a fresh empty directory, as a restorer on another machine would. */
+async function unpackArchive({ archivePath, target, password = ARCHIVE_PASSWORD }) {
+  await mkdir(target, { recursive: true });
+  await runProcess(sevenZipBinary, ['x', archivePath, `-o${target}`, `-p${password}`, '-y', '-bd'], { secrets: [password] });
+  return target;
+}
 
 // A tiny new-api shaped schema: enough tables to prove table-by-table fidelity without a live server.
 const NEWAPI_TABLES = {
@@ -251,7 +272,7 @@ test('prepareNewApi builds a restorable payload with a verified manifest', async
   } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
 });
 
-test('round trip: restoring into an empty directory reproduces every table exactly', async () => {
+test('round trip: the real encrypted archive extracts into an identical machine', { skip: !liveSevenZip && '7-Zip is not installed' }, async () => {
   const workspace = await makeWorkspace();
   const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-newapi-roundtrip-'));
   try {
@@ -267,15 +288,30 @@ test('round trip: restoring into an empty directory reproduces every table exact
     });
     const manifest = JSON.parse(await readFile(path.join(payload, 'manifest.json'), 'utf8'));
 
-    // Simulate the target machine: a brand-new empty data directory plus the archived .env.
+    // 1. Pack the payload into the real encrypted 7z archive a run would upload.
+    const archivePath = await packArchive({ payload, archivePath: path.join(stage, 'newapi-roundtrip.7z') });
+    assert.ok((await stat(archivePath)).size > 0, 'archive must be non-empty');
+    // The archive must actually be encrypted: listing without the password fails.
+    await assert.rejects(runProcess(sevenZipBinary, ['l', archivePath, '-y', '-bd'], { secrets: [ARCHIVE_PASSWORD] }), /exited with code|TOOL_FAILED/i);
+
+    // 2. Extract into a brand-new empty directory, as a restorer on another machine would.
+    const extracted = await unpackArchive({ archivePath, target: path.join(root, 'extracted') });
+    const files = await collectPayload(extracted);
+    assert.ok(files.includes('manifest.json'));
+    assert.ok(files.includes('RESTORE.md'));
+    assert.ok(!files.some((file) => file.includes('new-api-body-cache')), 'body cache must not be in the archive');
+    assert.ok(!files.some((file) => /\.db(-wal|-shm)$/.test(file)), 'WAL/SHM must not be in the archive');
+
+    // 3. Follow RESTORE.md: fresh data dir + the archived .env + the archived data files.
     const restored = path.join(root, 'restored');
     const restoredData = path.join(restored, 'data');
     await mkdir(restoredData, { recursive: true });
-    await writeFile(path.join(restoredData, 'one-api.db'), await readFile(path.join(payload, 'db', 'main.sqlite3')));
-    await writeFile(path.join(restored, '.env'), await readFile(path.join(payload, 'config', 'env')));
+    await writeFile(path.join(restoredData, 'one-api.db'), await readFile(path.join(extracted, manifest.mainDatabase.exportFile)));
+    await writeFile(path.join(restored, '.env'), await readFile(path.join(extracted, 'config/env')));
     const { cp } = await import('node:fs/promises');
-    await cp(path.join(payload, 'data'), restoredData, { recursive: true, force: true });
+    await cp(path.join(extracted, 'data'), restoredData, { recursive: true, force: true });
 
+    // 4. Compare table by table against the manifest taken from the extracted archive.
     const digests = sqliteTableDigests(path.join(restoredData, 'one-api.db'));
     assert.deepEqual(digests.map((table) => table.name).sort(), manifest.mainDatabase.tables.map((table) => table.name).sort());
     for (const expected of manifest.mainDatabase.tables) {
@@ -289,7 +325,7 @@ test('round trip: restoring into an empty directory reproduces every table exact
       assert.equal(actual.sha256, expected.sha256, `${expected.name} content hash must match`);
     }
 
-    // Content spot checks: configuration, keys, consumption and audit rows all survive.
+    // 5. Content spot checks: configuration, keys, consumption and audit rows all survive.
     const db = new DatabaseSync(path.join(restoredData, 'one-api.db'), { readOnly: true });
     try {
       assert.equal(db.prepare('PRAGMA integrity_check').get()['integrity_check'], 'ok');
@@ -302,10 +338,14 @@ test('round trip: restoring into an empty directory reproduces every table exact
       assert.equal(db.prepare('SELECT version FROM setups').get().version, 'v0.test');
     } finally { db.close(); }
 
-    // Files restored alongside the database and the excluded cache staying out.
+    // 6. Files restored alongside the database, and the archived .env carries CRYPTO_SECRET verbatim.
     assert.equal(existsSync(path.join(restoredData, 'readme-data.txt')), true);
     assert.equal(existsSync(path.join(restoredData, 'new-api-body-cache')), false);
     assert.match(await readFile(path.join(restored, '.env'), 'utf8'), /CRYPTO_SECRET=super-secret-crypto/);
+
+    // 7. A wrong password must never yield a readable archive.
+    await assert.rejects(unpackArchive({ archivePath, target: path.join(root, 'wrong'), password: 'not-the-password' }), /exited with code|TOOL_FAILED/i);
+    assert.equal(existsSync(path.join(root, 'wrong', 'manifest.json')), false);
   } finally { await rm(root, { recursive: true, force: true }); await workspace.cleanup(); }
 });
 
