@@ -119,6 +119,36 @@ try {
     await page.evaluate(() => document.fonts.ready);
     await pause(350);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${name}: page overflow`);
+    // Persistent layout contract: the shell geometry, a single page title, no
+    // legacy layout classes, and container radii within the 8px scale.
+    const layout = await page.evaluate(() => {
+      const header = document.querySelector('.shell-header');
+      const workspace = document.querySelector('.workspace');
+      const pill = (el) => el.matches('.switch, .status, .count, .tag-chip, .avatar, .segmented, .segmented *');
+      return {
+        h1Count: document.querySelectorAll('.main-content h1').length,
+        shellContext: document.querySelector('.shell-context')?.textContent?.trim() ?? null,
+        headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+        headerPosition: header ? getComputedStyle(header).position : null,
+        workspaceRadius: parseFloat(workspace ? getComputedStyle(workspace).borderTopLeftRadius : '0'),
+        legacy: ['.page-band', '.section-heading', '.metrics', '.overview-columns'].filter((s) => document.querySelector(s)),
+        bigRadius: [...document.querySelectorAll('.workspace, .panel, .modal, .modal-header, .modal-body, .modal-footer, input, textarea, select, .button, .icon-button, .table-wrap, .tag-input')]
+          .filter((el) => !pill(el))
+          .map((el) => ({ cls: String(el.className || el.tagName), v: parseFloat(getComputedStyle(el).borderTopLeftRadius) }))
+          .filter(({ v }) => Number.isFinite(v) && v > 8.01)
+          .map(({ cls, v }) => `${cls}:${v}px`),
+      };
+    });
+    assert.deepEqual(layout.legacy, [], `${name}: no legacy layout classes`);
+    assert.deepEqual(layout.bigRadius, [], `${name}: container radius within the scale`);
+    // The auth screens have no app shell yet, so the shell contract only applies afterwards.
+    if (layout.headerPosition !== null) {
+      assert.equal(layout.h1Count, 1, `${name}: exactly one h1`);
+      assert.equal(layout.headerHeight, 48, `${name}: header height 48px`);
+      assert.equal(layout.headerPosition, 'sticky', `${name}: header is sticky`);
+      assert.ok(layout.workspaceRadius <= 8.01, `${name}: workspace radius <= 8px`);
+      assert.equal(layout.shellContext, '管理控制台', `${name}: fixed shell context`);
+    }
     const badControls = await page.locator('button:visible, input:visible, select:visible').evaluateAll(elements => elements.filter(element => {
       if (element.closest('.table-wrap, .log-view, .files-breadcrumbs')) return false;
       const box = element.getBoundingClientRect();
