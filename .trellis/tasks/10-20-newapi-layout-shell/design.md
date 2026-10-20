@@ -136,8 +136,15 @@ overridden — leaving them would mean two competing layout models in the same s
 
 ### 3.1 Panel
 ```css
+/* No `overflow: hidden` on .panel: clipping the panel would hide a toolbar that
+   overflows instead of revealing it. Only the first/last child radii are
+   rounded, and .table-wrap owns horizontal scrolling. */
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--border);
-         border-radius: var(--radius-lg); overflow: hidden; }
+         border-radius: var(--radius-lg); }
+.panel > .panel-heading:first-child { border-top-left-radius: var(--radius-lg);
+                                      border-top-right-radius: var(--radius-lg); }
+.panel > :last-child { border-bottom-left-radius: var(--radius-lg);
+                       border-bottom-right-radius: var(--radius-lg); }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px;
                  min-height: 58px; padding: 16px 20px; }
 .panel-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 0 20px 20px; }

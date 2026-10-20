@@ -6,7 +6,7 @@ Status: layout scope complete and verified. Business/backend scope of sibling ta
 
 ## Scope delivered
 
-- Inset shell: 48px sticky header spanning the viewport, 208px rail (44px collapsed, 272px mobile drawer), floating `.workspace` inset by 216/56 with an 8px radius, `main` capped at 1600px and centred.
+- Inset shell: 48px sticky header spanning the viewport, 208px rail (44px collapsed, 272px mobile drawer), floating `.workspace` inset by 216/56 with an **8px** radius (final constraint, `--radius-lg`; the withdrawn 11.2px `--workspace-radius` exception is documented in `design.md` §4 and `prd.md`).
 - Panel system: every page block is `<section class="panel">` + `panel-heading` + `panel-body`. Only the page `<h1>`, the stats band, notices, pagination, the settings tab rail and the `content-grid` wrapper sit outside a panel.
 - Stats band: four transparent, borderless columns at `18px 20px` with 24px icons.
 - `content-grid`: desktop `1.6fr : 1fr` with a shared top edge; single full-width column with a 20px gap at and below 1100px.
@@ -35,6 +35,21 @@ AssertionError: light/1440/overview: row "系统配置" shows its name
 
 Reverting the sabotage returned the suite to green, confirming the check is not a no-op.
 
+## Independent re-verification (supervisor)
+
+Re-run by the reviewing agent on commit `ee6488c`, independently of the implementer's own runs:
+
+| Command | Result |
+| --- | --- |
+| `npm run build` | pass |
+| `npm run check` | pass |
+| `node scripts/ui-radius-audit.mjs` | pass |
+| `git diff --check` | clean |
+| `LAYOUT_PORT=16406 npm run check:layout` | pass — 6 pages x 4 viewports x 2 themes = 48 renders / 52 screenshots; overview task rows 8/8 visible |
+
+Verdict: accepted. Final radius constraint confirmed as **8px (`--radius-lg`)** for the shell surface
+and every container; no `--workspace-radius` alias exists.
+
 ## Known limitations
 
 - The mobile drawer has no Escape-to-close binding; it closes by tapping the scrim. This is recorded as a future improvement and is **not** asserted as supported.
@@ -50,6 +65,11 @@ Reverting the sabotage returned the suite to green, confirming the check is not 
 | `f2192cd` | spec: panel layout contract |
 | `58ec372` | fix: restore overview task row layout + brand accessible name |
 | `e1b94bd` | test: require visible overview task rows in every viewport/theme |
+| `0816ed2` | docs(spec): zero-width primary cell and unnamed brand guards |
+| `aa846ce` | docs(task): acceptance and verification results |
+| `4a8c0bd` | docs(task): task planning artifacts |
+| `ee6488c` | docs(spec): sidebar breakpoint synced to 901px desktop / 900px drawer |
+| _pending_ | docs(task): prd/design/implement synced to the final 8px constraint |
 
 ## Not committed (by parent-task constraint)
 

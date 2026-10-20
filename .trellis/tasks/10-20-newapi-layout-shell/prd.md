@@ -25,8 +25,9 @@ p3 的上一轮改造只动了**壳层细节**（圆角 token、侧边栏收起�
 | 内容 padding | `20px 24px 28px` | codebuddy2api `.main` |
 
 圆角：newapi 基础 `--radius: 1rem`，但**本项目父任务硬约束容器 ≤8px**，
-故取 `--radius: 8px`，`--radius-lg = 8px`，`--workspace-radius = 11.2px`(=8×1.4，
-与 newapi `rounded-xl` 同比例)。这与 codebuddy2api 的做法完全一致。
+故取 `--radius: 8px`、`--radius-lg = 8px`。**工作区圆角最终定为 `var(--radius-lg)` = 8px**：
+早期草案曾提议 `--workspace-radius: 11.2px`（8×1.4）以模仿 newapi `rounded-xl` 的比例，
+该提案因违反父任务硬约束且未获授权而被撤销，不存在 `--workspace-radius` 别名。
 
 ## 需求（R1–R6）
 
@@ -34,7 +35,7 @@ p3 的上一轮改造只动了**壳层细节**（圆角 token、侧边栏收起�
 - 顶栏 `.header`：`sticky top:0`，高 48px，**横向贯穿全宽**，含品牌 + 收起按钮 + 面包屑 + 状态 + 主题 + 账号菜单。
 - 侧边栏 `.sidebar`：`position: fixed; inset: 48px auto 0 0`（从顶栏下方开始），宽 208px，收起 44px。
 - 内容区 `.workspace`：**独立浮起卡片** `margin: 8px 8px 0 calc(var(--sidebar-width) + 8px)`，
-  `border: 1px solid var(--line)`、`border-radius: var(--workspace-radius)`、
+  `border: 1px solid var(--border)`、`border-radius: var(--radius-lg)`（=8px）、
   `background: var(--surface)`、`box-shadow: 0 1px 3px var(--shadow)`。
 - 收起时 `.workspace { margin-left: calc(44px + 8px) }`，全程 `transition: margin var(--sidebar-motion)`。
 - 移动端（≤900px）：侧边栏变抽屉（`transform: translateX(-100%)` + 遮罩），`.workspace` 无左 margin。
@@ -48,10 +49,11 @@ p3 的上一轮改造只动了**壳层细节**（圆角 token、侧边栏收起�
 - 尊重 `prefers-reduced-motion`。
 
 ### R3 统一 panel 体系
-- `.panel`：`border: 1px solid var(--line)` + `border-radius: var(--panel-radius)` + `overflow: hidden` + `background: var(--surface)`。
+- `.panel`：`border: 1px solid var(--border)` + `border-radius: var(--radius-lg)` + `background: var(--surface)`。
+  **不使用 `overflow: hidden`**（会掩盖内部工具栏越界）；只裁剪首/末子元素圆角，横向滚动交给 `.table-wrap`。
 - `.panel-heading`：`min-height: 58px`、`padding: 16px 20px`，左侧标题 + 右侧操作。
 - `.panel-body`：`padding: 0 20px 20px`。
-- `.table-wrap`：`overflow: auto`、`overscroll-behavior-inline: contain`，表头 `position: sticky; top: 0; background: var(--soft)`。
+- `.table-wrap`：`overflow-x: auto`、`overscroll-behavior-inline: contain`，表头 `position: sticky; top: 0`。
 - 替代现有 `.page-band` / `.section-heading`，逐页替换。
 
 ### R4 统计区
@@ -83,14 +85,14 @@ p3 的上一轮改造只动了**壳层细节**（圆角 token、侧边栏收起�
 
 ## 验收标准
 
-- [ ] 侧边栏 208px / 收起 44px；顶栏 48px 贯穿全宽；内容区为浮起圆角卡片（inset shell）。
-- [ ] 统计区 4 列透明网格（无边框卡片），数字 26px。
-- [ ] `.panel` 体系统一，全站无遗留 `.page-band` 样式冲突。
-- [ ] `.main` max-width 1600px 居中。
-- [ ] 色调 token 未改；`<h1>` 全站仅一处；容器圆角 ≤8px。
-- [ ] `npm run check`、`npm test`、`npm run build`、`npm run check:browser` 全绿。
-- [ ] 桌面 1440 / 768 / 390 / 360 四档截图逐页核对，无横向溢出。
-- [ ] 分批路径限定提交，每步立刻提交。
+- [x] 侧边栏 208px / 收起 44px；顶栏 48px 贯穿全宽；内容区为浮起圆角卡片（inset shell，圆角 8px）。
+- [x] 统计区 4 列透明网格（无边框卡片），数字 26px。
+- [x] `.panel` 体系统一，全站无遗留 `.page-band` 样式冲突。
+- [x] `.main` max-width 1600px 居中。
+- [x] 色调 token 未改；`<h1>` 全站仅一处；容器圆角 ≤8px。
+- [x] `npm run check`、`npm test`、`npm run build`、`npm run check:browser` 全绿（另加 `npm run check:layout`）。
+- [x] 桌面 1440 / 768 / 390 / 360 四档截图逐页核对，无横向溢出。
+- [x] 分批路径限定提交，每步立刻提交。
 
 ## 文件归属
 

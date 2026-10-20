@@ -21,57 +21,58 @@ node scripts/ui-radius-audit.mjs
 ## 0. Checklist
 
 ### Phase 0 — baseline evidence
-- [ ] 0.1 Confirm `SHELL-DONE`/`ALL-DONE` on the board and that p3 released `App.vue`/`style.css`.
-- [ ] 0.2 Save current screenshots to `.artifacts/layout-before/` (not committed) as the comparison set.
-- [ ] 0.3 `grep -n "main-content\|workspace-footer\|page-band" scripts/check-browser.mjs` — record which
+- [x] 0.1 Confirm `SHELL-DONE`/`ALL-DONE` on the board and that p3 released `App.vue`/`style.css`.
+- [x] 0.2 Save current screenshots to `.artifacts/layout-before/` (not committed) as the comparison set.
+- [x] 0.3 `grep -n "main-content\|workspace-footer\|page-band" scripts/check-browser.mjs` — record which
       locators depend on the markup we are about to change (risk L1).
 
 ### Phase 1 — layout skeleton (highest risk, one commit)
-- [ ] 1.1 `style.css`: add `--app-header-height`, `--sidebar-width: 208px`,
+- [x] 1.1 `style.css`: add `--app-header-height`, `--sidebar-width: 208px`,
       `--sidebar-width-icon: 44px`, `--sidebar-width-mobile: 272px`, `--sidebar-motion`, `--shell-gap`,
-      `--shadow`, `--panel-radius`, `--workspace-radius`. **No colour value changes.**
-- [ ] 1.2 `style.css`: rewrite `.app` / `.header` / `.sidebar` / `.workspace` / `.main` per design §2.2–2.4,
+      `--shadow`. **No colour value changes.** No `--workspace-radius` / `--panel-radius` aliases:
+      the shell surface uses `--radius-lg` (8px) like every other container.
+- [x] 1.2 `style.css`: rewrite `.app` / `.header` / `.sidebar` / `.workspace` / `.main` per design §2.2–2.4,
       incl. mobile drawer override and `prefers-reduced-motion`.
-- [ ] 1.3 `App.vue`: move `<header class="header">` out of `.workspace` to be a direct child of `.app`,
+- [x] 1.3 `App.vue`: move `<header class="header">` out of `.workspace` to be a direct child of `.app`,
       before `<aside class="sidebar">`; move brand + collapse toggle + breadcrumb into the header;
       keep `.main-content` on `<main>` and the single `<h1>`.
-- [ ] 1.4 Run `npm run check` + `npm run build`; open at 1440 / 768 / 390 / 360 and verify:
+- [x] 1.4 Run `npm run check` + `npm run build`; open at 1440 / 768 / 390 / 360 and verify:
       header spans full width, sidebar starts below it, workspace floats with an 8px gutter,
       collapse animates smoothly, no horizontal overflow.
-- [ ] **Commit 1** `refactor(ui): adopt newapi inset shell with 208px rail`
+- [x] **Commit 1** `refactor(ui): adopt newapi inset shell with 208px rail`
       → gate G1.
 
 ### Phase 2 — panel / stats / grid systems
-- [ ] 2.1 `style.css`: add `.panel` / `.panel-heading` / `.panel-body` / `.stats` / `.stat` /
+- [x] 2.1 `style.css`: add `.panel` / `.panel-heading` / `.panel-body` / `.stats` / `.stat` /
       `.content-grid`, and the sticky table head. Delete the now-unused `.metrics` / `.metric` /
       `.overview-columns` rules **only after** the pages that use them are migrated (do it in the
       page commits, not here).
-- [ ] **Commit 2** `refactor(ui): add panel, stats and content-grid primitives`
+- [x] **Commit 2** `refactor(ui): add panel, stats and content-grid primitives`
 
 ### Phase 3 — page-by-page migration (one commit each)
 For every page: replace `.page-band`→`.panel`, `.section-heading`→`.panel-heading`, add
 `.panel-body`, and verify no duplicate metric/title survives.
 
-- [ ] 3.1 overview: `.metrics`→`.stats`, `.overview-columns`→`.content-grid`, remove the duplicated
+- [x] 3.1 overview: `.metrics`→`.stats`, `.overview-columns`→`.content-grid`, remove the duplicated
       storage figure from the environment panel. → **Commit 3** `refactor(ui): rebuild overview on panel grid`
-- [ ] 3.2 jobs (`JobsView.vue`, minimal class swaps only). → **Commit 4** `refactor(ui): move jobs list onto panel system`
-- [ ] 3.3 runs. → **Commit 5** `refactor(ui): move run history onto panel system`
-- [ ] 3.4 files (`FileManagerView.vue`). → **Commit 6** `refactor(ui): align file manager with shell`
-- [ ] 3.5 storage (`StorageView.vue`). → **Commit 7** `refactor(ui): align storage page with shell`
-- [ ] 3.6 settings (`SettingsView.vue`). → **Commit 8** `refactor(ui): align settings page with shell`
-- [ ] 3.7 modals: `Modal.vue` / `RunDetail.vue` / `JobEditor.vue` / `PathPicker.vue` radius + padding.
+- [x] 3.2 jobs (`JobsView.vue`, minimal class swaps only). → **Commit 4** `refactor(ui): move jobs list onto panel system`
+- [x] 3.3 runs. → **Commit 5** `refactor(ui): move run history onto panel system`
+- [x] 3.4 files (`FileManagerView.vue`). → **Commit 6** `refactor(ui): align file manager with shell`
+- [x] 3.5 storage (`StorageView.vue`). → **Commit 7** `refactor(ui): align storage page with shell`
+- [x] 3.6 settings (`SettingsView.vue`). → **Commit 8** `refactor(ui): align settings page with shell`
+- [x] 3.7 modals: `Modal.vue` / `RunDetail.vue` / `JobEditor.vue` / `PathPicker.vue` radius + padding.
       → **Commit 9** `refactor(ui): normalise dialog surfaces`
 
 ### Phase 4 — verification
-- [ ] 4.1 Append the layout assertions to `scripts/check-browser.mjs` (one contiguous block, design §6).
-- [ ] 4.2 Full four-command run; inspect every screenshot at 1440 / 768 / 390 / 360.
-- [ ] 4.3 Dark theme pass: every page, plus collapsed rail.
-- [ ] **Commit 10** `test(ui): assert newapi layout geometry`
+- [x] 4.1 Append the layout assertions to `scripts/check-browser.mjs` (one contiguous block, design §6).
+- [x] 4.2 Full four-command run; inspect every screenshot at 1440 / 768 / 390 / 360.
+- [x] 4.3 Dark theme pass: every page, plus collapsed rail.
+- [x] **Commit 10** `test(ui): assert newapi layout geometry`
 
 ### Phase 5 — docs / spec
-- [ ] 5.1 `.trellis/spec/frontend/ui-api.md`: layout architecture section (header/rail/workspace
+- [x] 5.1 `.trellis/spec/frontend/ui-api.md`: layout architecture section (header/rail/workspace
       geometry, panel system, radius ledger, sticky header rule).
-- [ ] **Commit 11** `docs(spec): record inset shell layout contracts`
+- [x] **Commit 11** `docs(spec): record inset shell layout contracts`
 
 ---
 
@@ -96,6 +97,8 @@ flat shell without touching any page content. Page commits are cosmetic class sw
 Append at START, after commit 1 (PROGRESS), after commit 9 (PROGRESS), and at DONE. If a decision is
 needed, append `BLOCKED` with the chosen default and continue.
 
-Known decision already defaulted in `design.md` §4: `--workspace-radius` = 11.2px (newapi
-`rounded-xl` proportion) for the single outermost shell surface only; every inner container stays
-≤8px.
+Known decision already defaulted in `design.md` §4 and **finalised in review**: the shell surface
+uses `--radius-lg` = **8px**, same as every other container. An earlier draft proposed
+`--workspace-radius` = 11.2px (newapi `rounded-xl` proportion) for the single outermost shell
+surface only; that exception was withdrawn because it violated the parent task's hard ≤8px
+container constraint without authorisation, and no such alias exists in `style.css`.
