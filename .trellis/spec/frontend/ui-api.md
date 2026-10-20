@@ -25,7 +25,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - Navigation is hash-based: overview/jobs/files/runs/storage/settings. Theme persists in `backup-theme`.
 - `web/src/nav.ts` is the single page registry: adding a page is one row there, which supplies the sidebar entry, the `Page` type, the hash validator, the `<h1>` title, and the optional task-count badge (`badge: 'jobs'`). The page body still needs its own `v-else-if` branch in `App.vue`.
 - Each page renders its title exactly once, as `.main-content h1`. The topbar shows only the fixed `管理控制台` label and must not repeat the page name. No page-eyebrow/English sub-heading above `h1`.
-- Sidebar collapse persists in `backup-sidebar-collapsed` (`'1'`/`'0'`, try/catch — storage may throw). Collapse only applies at `min-width: 851px`; below that the sidebar is a `transform` drawer keyed off `.sidebar.open` and collapse rules are neutralised.
+- Sidebar collapse persists in `backup-sidebar-collapsed` (`'1'`/`'0'`, try/catch — storage may throw). Collapse only applies at `min-width: 901px` (desktop); at `max-width: 900px` the sidebar becomes a `transform` drawer keyed off `.sidebar.open` and all collapse rules are neutralised.
 - Collapse animates through `--sidebar-motion` (200ms) on `width`, `margin-left`, and label `opacity`+`max-width`. Never toggle `display` on labels mid-transition, and keep `overflow-x: hidden` on the rail so the transition never widens the document. The collapsed rail keeps icons plus `title` tooltips.
 - Border radius comes only from `--radius-sm|md|lg|pill` in `style.css`. `--radius` is `0.5rem` (8px), matching new-api's 0.5 tier; containers never exceed `--radius-lg`, and only badges, switches, avatars, and dots use `--radius-pill`. `node scripts/ui-radius-audit.mjs` fails the build on any raw corner value.
 - Account identity and sign-out live in the topbar `AccountMenu`, not in the sidebar. The sidebar has no workspace label, no administrator card, and no session footer; the content area has no footer. Overview's `运行环境` panel carries no `管理员会话` line.
@@ -119,9 +119,9 @@ Wrong: render an error panel and an "empty directory" block for the same failed 
 
 Correct: reset the entry list on failure, show one localized error panel with a retry, and keep the raw text in a tooltip.
 
-Wrong: hide sidebar labels with `display: none` during collapse, or let collapse rules leak below the 851px drawer breakpoint.
+Wrong: hide sidebar labels with `display: none` during collapse, or let collapse rules leak below the 901px desktop breakpoint.
 
-Correct: transition `opacity` + `max-width`, and scope collapse to `min-width: 851px`.
+Correct: transition `opacity` + `max-width`, and scope collapse to `min-width: 901px`, with the `max-width: 900px` drawer owning horizontal motion.
 
 Wrong: two controls with the same accessible name (for example an empty-state shortcut reusing the form's submit label).
 
