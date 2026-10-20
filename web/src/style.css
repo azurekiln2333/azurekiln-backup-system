@@ -239,6 +239,9 @@ input[readonly] { background: var(--surface-soft); }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .content-grid > * { min-width: 0; }
 .count { font-family: "Inter Variable", Inter, sans-serif; font-size: 10px; color: var(--muted); background: var(--surface-soft); border-radius: var(--radius-sm); padding: 2px 6px; min-width: 22px; text-align: center; font-weight: 500; }
+.overview-job { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+/* The status chip and the action button keep their intrinsic size; the primary
+   cell absorbs the remaining width and ellipsizes long names/paths. */
 .overview-job > .status { flex-shrink: 0; }
 .overview-job > .icon-button { flex-shrink: 0; }
 .job-primary { display: flex; flex: 1; min-width: 0; gap: 12px; align-items: center; text-align: left; color: var(--text); background: transparent; border: 0; padding: 0; }
@@ -304,11 +307,8 @@ tr:hover td { background: color-mix(in srgb, var(--surface-soft) 55%, transparen
 .jobs-table .job-primary span { max-width: 250px; }
 /* The overview list is not a table: its primary cell must shrink so the status
    chip and the run button stay on the row at narrow widths. */
-.overview-job .job-primary { min-width: 0; flex: 1 1 0%; width: 0; overflow: hidden; }
-.overview-job .job-primary > div:last-child { min-width: 0; flex: 1 1 0%; width: 0; overflow: hidden; }
-.overview-job .job-primary span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.overview-job .job-primary strong { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.overview-job-list { min-width: 0; overflow: hidden; }
+.overview-job .job-primary { flex: 1 1 0%; }
+.overview-job-list { min-width: 0; }
 .target-label { display: flex; align-items: center; gap: 6px; color: var(--muted); margin: 5px 0; }
 .target-label span { font-size: 10px; max-width: 230px; overflow-wrap: anywhere; }
 .row-actions { display: flex; gap: 2px; }
@@ -405,11 +405,9 @@ input.switch:checked:after { transform: translateX(13px); }
 .settings-nav button { display: flex; align-items: center; gap: 11px; background: transparent; border: 0; border-radius: var(--radius-md); padding: 12px; font-size: 12px; color: var(--muted); text-align: left; }
 .settings-nav button.active { background: var(--blue-soft); color: var(--primary); font-weight: 600; }
 .settings-form { min-height: 470px; }
-.settings-form .section-heading { margin-bottom: 27px; padding-bottom: 19px; border-bottom: 1px solid var(--border); }
 .form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 23px; }
 .property-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 27px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; }
 .local-storage-section { margin-top: 31px; padding-top: 25px; border-top: 1px solid var(--border); }
-.settings-form .local-storage-section .section-heading { margin-bottom: 18px; padding-bottom: 0; border: 0; }
 .local-archives-heading { margin-top: 29px; }
 .local-archives-empty { padding: 16px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 .local-archive-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--border); }
@@ -542,7 +540,7 @@ body.modal-open .toast-message { display: none; }
   .empty-state { min-height: 245px; padding: 24px 12px; }
   .empty-state.tall { min-height: 330px; }
   .empty-state.compact { min-height: 150px; }
-  .overview-job { gap: 8px; }
+  .overview-job { gap: 8px; padding: 12px 14px; }
   .job-primary { gap: 9px; }
   .job-primary span { max-width: 180px; }
   .job-symbol { width: 33px; height: 33px; }
