@@ -113,6 +113,29 @@ const probe = (page) => page.evaluate(() => {
     rootFont,
     docScrollWidth: document.documentElement.scrollWidth,
     innerWidth: window.innerWidth,
+    // Brand link must keep an accessible name even when the wordmark is hidden.
+    brandAriaLabel: document.querySelector('.shell-brand .brand')?.getAttribute('aria-label') ?? null,
+    // The overview task list must actually show its primary information: a row
+    // that renders only the status chip and the run button is a regression.
+    overviewRows: [...document.querySelectorAll('.overview-job')].map((row) => {
+      const name = row.querySelector('.job-primary strong');
+      const source = row.querySelector('.job-primary span.mono');
+      const icon = row.querySelector('.job-symbol');
+      const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const c = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' && Number(c.opacity) > 0;
+      };
+      return {
+        text: name?.textContent?.trim() ?? null,
+        nameVisible: visible(name),
+        nameWidth: name ? Math.round(name.getBoundingClientRect().width) : 0,
+        sourceVisible: visible(source),
+        iconVisible: visible(icon),
+        rowWidth: Math.round(row.getBoundingClientRect().width),
+      };
+    }),
     navGroupLabels: [...document.querySelectorAll('.nav-label')].map((n) => n.textContent.trim()),
     // Exactly one navigation toggle must be visible at any width.
     visibleNavToggles: [...document.querySelectorAll('.shell-header .sidebar-toggle, .shell-header .mobile-menu')]
@@ -164,6 +187,7 @@ const statsProbe = (page) => page.evaluate(() => [...document.querySelectorAll('
 
 let runtime, server, browser, context, page;
 let checks = 0;
+const overviewRowSummary = { rows: 0, named: 0, combos: 0, texts: new Set() };
 try {
   runtime = await createApp({ config: loadConfig({ DATA_DIR: path.join(root, 'state'), SOURCE_ROOTS: sourceRoot, BACKUP_PORT: String(port) }, root) });
   server = await new Promise((resolve) => { const s = runtime.app.listen(port, '127.0.0.1', () => resolve(s)); });
@@ -181,6 +205,7 @@ try {
   await page.getByLabel('确认密码', { exact: true }).fill('layout-check-password');
   await page.getByRole('button', { name: '创建管理员' }).click();
   await page.locator('.main-content h1').waitFor();
+  await page.waitForTimeout(600);
 
   const matrix = { pages: pages.length, viewports: viewports.length, themes: 2, screenshots: 0 };
 
@@ -222,9 +247,27 @@ try {
         assert.equal(m.header.position, 'sticky', `${where}: header sticky`);
         assert.equal(m.headerInsideWorkspace, false, `${where}: header outside .workspace`);
         assert.deepEqual(m.visibleNavToggles, [vp.desktop ? 'sidebar-toggle' : 'mobile-menu'], `${where}: exactly one nav toggle`);
+        assert.ok(m.brandAriaLabel && m.brandAriaLabel.trim().length > 0, `${where}: brand link has an accessible name`);
         if (m.liveIndicator) assert.equal(m.liveIndicator.singleLine, true, `${where}: status stays on one line`);
         if (m.liveIndicator && !m.brandText?.hidden) assert.equal(m.liveIndicator.clipped, false, `${where}: status text not clipped`);
         if (m.brandText && !m.brandText.hidden) assert.equal(m.brandText.ellipsis, 'ellipsis', `${where}: brand ellipsizes`);
+
+        if (target.id === 'overview') {
+          // The list must exist and must be fully readable at every width/theme:
+          // silently skipping when zero rows render would hide a blank overview.
+          assert.ok(m.overviewRows.length > 0, `${where}: overview renders task rows`);
+          assert.ok(m.overviewRows.some((r) => r.text === '系统配置'), `${where}: built-in 系统配置 row is listed`);
+          overviewRowSummary.rows += m.overviewRows.length;
+          overviewRowSummary.combos += 1;
+          for (const row of m.overviewRows) {
+            if (row.nameVisible && row.nameWidth > 0) overviewRowSummary.named += 1;
+            if (row.text) overviewRowSummary.texts.add(row.text);
+            assert.equal(row.nameVisible, true, `${where}: row "${row.text}" shows its name`);
+            assert.ok(row.nameWidth > 0, `${where}: row "${row.text}" name has width (${row.nameWidth})`);
+            assert.equal(row.iconVisible, true, `${where}: row "${row.text}" shows its type icon`);
+            assert.equal(row.sourceVisible, true, `${where}: row "${row.text}" shows its source`);
+          }
+        }
 
         if (vp.desktop) {
           assert.equal(m.header.height, 48, `${where}: header 48px`);
@@ -450,7 +493,12 @@ try {
   }
 
   assert.deepEqual(consoleErrors, [], 'no browser console errors');
+  // Overview task rows must have been checked in every viewport x theme combination.
+  const expectedCombos = viewports.length * 2;
+  assert.equal(overviewRowSummary.combos, expectedCombos, `overview rows checked in all ${expectedCombos} viewport/theme combinations (got ${overviewRowSummary.combos})`);
+  assert.equal(overviewRowSummary.named, overviewRowSummary.rows, `every overview row render shows a visible name (${overviewRowSummary.named}/${overviewRowSummary.rows})`);
   console.log(`Layout check passed: ${matrix.pages} pages x ${matrix.viewports} viewports x ${matrix.themes} themes (${matrix.screenshots} screenshots, ${checks} page renders asserted).`);
+  console.log(`Overview task rows: ${overviewRowSummary.combos}/${expectedCombos} combinations, ${overviewRowSummary.rows} row renders, ${overviewRowSummary.named} with a visible name (${[...overviewRowSummary.texts].join(', ')}).`);
   console.log(`Screenshots: ${screenshotDir}`);
 } finally {
   if (browser) await browser.close();
