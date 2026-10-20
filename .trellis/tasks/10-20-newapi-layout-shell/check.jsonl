@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Verify navigation, single-h1, no-duplicate-metric and screenshot requirements are still satisfied after the layout rewrite."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality check section to walk before sign-off."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Layout change spans CSS, App.vue, several view components and the browser test; use for consistency review."}
+{"file": ".trellis/tasks/10-20-newapi-layout-shell/design.md", "reason": "Acceptance source: exact geometry values, panel/stats rules, radius ledger, risk mitigations."}
+{"file": ".trellis/tasks/10-20-newapi-layout-shell/implement.md", "reason": "Review gates G1-G6 and the dead-class grep check to run before sign-off."}
+{"file": ".trellis/tasks/10-20-newapi-layout-shell/prd.md", "reason": "Acceptance criteria R1-R6 and the hard constraints (colour unchanged, radius <=8px, no duplicate elements)."}

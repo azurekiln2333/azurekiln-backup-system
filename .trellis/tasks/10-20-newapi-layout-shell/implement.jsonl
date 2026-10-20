@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Console contracts: hash navigation, single h1, no duplicate metrics, api()/write() usage, browser verification requirements."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality gate: which commands must pass and what to inspect before reporting done."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component structure conventions for Vue SFCs when adjusting view markup."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Code standards and forbidden patterns for the stylesheet and templates."}
+{"file": ".trellis/tasks/10-20-newapi-layout-shell/design.md", "reason": "Authoritative layout design: geometry table, DOM target, CSS for header/rail/workspace/panel/stats/grid, radius rebasing, risks L1-L7."}
+{"file": ".trellis/tasks/10-20-newapi-layout-shell/implement.md", "reason": "Ordered commit plan with per-phase checklist and review gates G1-G6."}
+{"file": ".trellis/tasks/10-18-ui-revamp-newapi-backup/prd.md", "reason": "Global rules: path-limited commits, immediate commit, board protocol, colour/radius constraints, validation commands."}
