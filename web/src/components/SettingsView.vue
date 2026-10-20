@@ -75,8 +75,9 @@ void load();
       <div v-if="error" class="notice error" role="alert">{{ error }}</div>
       <div v-if="loading" class="loading-line">正在读取设置…</div>
       <template v-else>
-        <section v-show="active === 'smtp'">
-          <div class="section-heading"><h2>邮件通知</h2><label class="toggle-row"><input v-model="form.smtp.enabled" class="switch" type="checkbox" /><span>{{ form.smtp.enabled ? '已启用' : '未启用' }}</span></label></div>
+        <section v-show="active === 'smtp'" class="panel settings-panel">
+          <div class="panel-heading"><h2>邮件通知</h2><label class="toggle-row"><input v-model="form.smtp.enabled" class="switch" type="checkbox" /><span>{{ form.smtp.enabled ? '已启用' : '未启用' }}</span></label></div>
+          <div class="panel-body">
           <div class="form-grid">
             <label class="field">SMTP 主机<input v-model="form.smtp.host" placeholder="smtp.example.com" /></label>
             <label class="field">端口<input v-model.number="form.smtp.port" type="number" min="1" max="65535" /></label>
@@ -86,10 +87,12 @@ void load();
             <label class="field full">发件人<input v-model="form.smtp.from" type="email" placeholder="backup@example.com" /></label>
             <label class="field full">收件人<textarea v-model="recipients" rows="3" placeholder="admin@example.com" /></label>
           </div>
+          </div>
           <div class="form-actions"><button type="button" class="button secondary" :disabled="testing || saving || !form.smtp.enabled" @click="testEmail"><Send :size="16" />{{ testing ? '发送中…' : '发送测试邮件' }}</button><button class="button primary" :disabled="saving"><Save :size="16" />保存设置</button></div>
         </section>
-        <section v-show="active === 'oidc'">
-          <div class="section-heading"><h2>OAuth2 / OIDC 登录</h2><label class="toggle-row"><input v-model="form.oidc.enabled" class="switch" type="checkbox" /><span>{{ form.oidc.enabled ? '已启用' : '未启用' }}</span></label></div>
+        <section v-show="active === 'oidc'" class="panel settings-panel">
+          <div class="panel-heading"><h2>OAuth2 / OIDC 登录</h2><label class="toggle-row"><input v-model="form.oidc.enabled" class="switch" type="checkbox" /><span>{{ form.oidc.enabled ? '已启用' : '未启用' }}</span></label></div>
+          <div class="panel-body">
           <div class="form-grid">
             <label class="field full">Issuer URL<input v-model="form.oidc.issuer" type="url" placeholder="https://sso.example.com" /></label>
             <label class="field">Client ID<input v-model="form.oidc.clientId" /></label>
@@ -97,24 +100,27 @@ void load();
             <label class="field full">管理员 Subject（sub）<input v-model="form.oidc.subject" autocomplete="off" /></label>
             <label class="field full">回调地址<input :value="callbackUrl" readonly class="mono" /></label>
           </div>
+          </div>
           <div class="form-actions"><button class="button primary" :disabled="saving"><KeyRound :size="16" />保存设置</button></div>
         </section>
-        <section v-show="active === 'storage'">
-          <div class="section-heading"><h2>临时文件策略</h2></div>
+        <section v-show="active === 'storage'" class="panel settings-panel">
+          <div class="panel-heading"><h2>临时文件策略</h2></div>
+          <div class="panel-body">
           <div class="form-grid">
             <label class="field full">上传成功后的本地归档<select v-model="form.storage.successCleanupMode"><option value="immediate">立即清理</option><option value="manual">手动清理</option></select></label>
             <label class="field">失败文件保留时长（小时）<input v-model.number="form.storage.failedRetentionHours" type="number" min="0" max="168" /></label>
             <label class="field">临时空间上限（GB）<input v-model.number="tempGb" type="number" min="0.001" step="any" /></label>
           </div>
           <div class="form-actions"><button class="button primary" :disabled="saving"><Save :size="16" />保存设置</button></div>
-          <div class="local-storage-section">
-            <div class="section-heading"><h2>临时文件占用</h2><button type="button" class="icon-button" title="刷新占用空间" aria-label="刷新占用空间" :disabled="storageLoading || !!clearing" @click="refreshStorage"><RefreshCw :size="17" :class="{ spinning: storageLoading }" /></button></div>
+          <div class="local-storage-section panel-sub">
+            <div class="panel-heading sub-heading"><h2>临时文件占用</h2><button type="button" class="icon-button" title="刷新占用空间" aria-label="刷新占用空间" :disabled="storageLoading || !!clearing" @click="refreshStorage"><RefreshCw :size="17" :class="{ spinning: storageLoading }" /></button></div>
             <div v-if="storageError" class="notice error" role="alert">{{ storageError }}</div>
             <div v-if="storageStatus" class="property-grid"><div><span>当前占用</span><strong>{{ bytes(storageStatus.tempBytes) }}</strong></div><div><span>空间上限</span><strong>{{ bytes(storageStatus.maxTempBytes) }}</strong></div><div><span>成功归档</span><strong>{{ bytes(storageStatus.retainedBytes) }}</strong></div><div><span>其他临时文件</span><strong>{{ bytes(Math.max(0, storageStatus.tempBytes - storageStatus.retainedBytes)) }}</strong></div></div>
             <div v-else-if="storageLoading" class="loading-line">正在读取空间占用…</div>
-            <div class="section-heading local-archives-heading"><h2>本地保留归档 <span class="count">{{ storageStatus?.localArchives.length ?? 0 }}</span></h2><button v-if="storageStatus?.localArchives.length" type="button" class="button secondary small" :disabled="!!clearing" @click="clearArchives()"><Trash2 :size="15" />清理全部</button></div>
+            <div class="panel-heading sub-heading local-archives-heading"><h2>本地保留归档 <span class="count">{{ storageStatus?.localArchives.length ?? 0 }}</span></h2><button v-if="storageStatus?.localArchives.length" type="button" class="button secondary small" :disabled="!!clearing" @click="clearArchives()"><Trash2 :size="15" />清理全部</button></div>
             <div v-if="storageStatus && !storageStatus.localArchives.length" class="local-archives-empty">暂无本地保留归档</div>
             <div v-for="archive in storageStatus?.localArchives ?? []" :key="archive.runId" class="local-archive-row"><div><strong>{{ archive.jobName }}</strong><span class="mono">{{ archive.archiveName }}</span><small>{{ dateTime(archive.createdAt) }} · {{ bytes(archive.bytes) }}</small></div><button type="button" class="icon-button danger" title="清理本地归档" :aria-label="`清理本地归档 ${archive.archiveName}`" :disabled="!!clearing" @click="clearArchives(archive.runId)"><Trash2 :size="17" /></button></div>
+          </div>
           </div>
         </section>
       </template>

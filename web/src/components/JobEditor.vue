@@ -250,7 +250,7 @@ void loadRemotes();
           </div>
         </section>
         <section v-show="tab === 1" class="form-section">
-          <div class="section-heading"><h3>同步目标</h3><button class="button secondary small" type="button" :disabled="form.destinations.length >= 10" @click="addDestination"><Plus :size="16" />添加目标</button></div>
+          <div class="form-section-heading"><h3>同步目标</h3><button class="button secondary small" type="button" :disabled="form.destinations.length >= 10" @click="addDestination"><Plus :size="16" />添加目标</button></div>
           <div v-if="remoteError" class="notice warning">{{ remoteError }}<button type="button" class="text-button" @click="loadRemotes">重新读取</button></div>
           <p v-if="batch && canBatch" class="muted">批量添加时，这里填父保存目录。每个任务上传到其下与源子目录同名的文件夹<template v-if="batchPreview && form.destinations[0]?.remote">，例如 {{ form.destinations[0].remote }}:{{ batchDestination(form.destinations[0].path, batchPreview.folder) }}</template>。</p>
           <div v-for="(destination, index) in form.destinations" :key="index" class="destination-editor">
