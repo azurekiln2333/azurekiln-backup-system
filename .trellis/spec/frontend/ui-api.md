@@ -75,7 +75,9 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 
 ## 6. Tests Required
 
-Run `npm run check`, `npm run build`, and `npm run check:browser`. The browser script requires installed Chromium and real rclone/7-Zip tools. It uses isolated temporary state and local alias destinations, checks setup/config import/pickers/editor/execution/download/settings/login, and writes desktop/mobile/light/dark screenshots under `.artifacts/screenshots/`. File-browser assertions cover search before pagination, empty states, page shrink, missing-directory retry, stale directory/root responses, search responses arriving during the debounce delay, and both source-prefill actions. Freeze the browser clock for debounce race checks so assertions do not depend on network speed. Do not populate the user's real installation with fixtures.
+Run `npm run check`, `npm run build`, `npm run check:layout`, and `npm run check:browser`. The browser scripts require installed Chromium and real rclone/7-Zip tools. They use isolated temporary state and local alias destinations, checks setup/config import/pickers/editor/execution/download/settings/login, and writes desktop/mobile/light/dark screenshots under `.artifacts/screenshots/` and `.artifacts/layout/`. File-browser assertions cover search before pagination, empty states, page shrink, missing-directory retry, stale directory/root responses, search responses arriving during the debounce delay, and both source-prefill actions. Freeze the browser clock for debounce race checks so assertions do not depend on network speed. Do not populate the user's real installation with fixtures.
+
+`npm run check:layout` is the layout acceptance gate and must stay assertion-based. It walks all six pages across 1440/768/390/360 in both themes and asserts: one `<h1>` per page, the fixed `管理控制台` shell context, header 48px/sticky/sibling-of-`.workspace`, rail 208px (44px collapsed), workspace inset 216/56 with an 8px radius, `main` at 1600px centred (verified at 1920), container radii within the 8px scale, no legacy layout classes (`.page-band`, `.section-heading`, `.metrics`, `.overview-columns`), no horizontal document overflow, no visible control outside the viewport, every table/toolbar/form inside a `.panel`, exactly one visible navigation toggle per width, the stats band borderless/transparent at `18px 20px` with 24px icons, `content-grid` columns top-aligned at 1.6fr:1fr on desktop and full-width stacked at a 20px gap below 1100px, sticky `th` plus `overscroll-behavior-inline: contain` on `.table-wrap`, and a genuinely scrolled settings page in a 500px-tall viewport. Never weaken these to print-only probes: the earlier "44 screenshots passed but the layout was still the old one" round failed exactly because the checks could not fail.
 
 Also run `node scripts/ui-radius-audit.mjs`; it scans `web/src/**/*.{vue,css}` and must report zero violations.
 
@@ -84,6 +86,18 @@ The sign-out assertion opens the account menu first (`getByRole('button', {name:
 Running several console checks concurrently on one machine starves rclone detection and surfaces as a false "import button stays disabled" timeout. Confirm node/Chrome process counts have dropped before treating that failure as a regression.
 
 ## 7. Wrong vs Correct
+
+Wrong: a page that renders a toolbar, table or form block as a direct child of `.main-content` instead of inside a `.panel`.
+
+Correct: every content block is `<section class="panel">` with `panel-heading` and `panel-body`; only the page `<h1>`, the stats band, notices, pagination, the settings tab rail and the `content-grid` wrapper sit outside a panel.
+
+Wrong: `.panel { overflow: hidden }` to clip the rounded corners, which hides a toolbar that overflows instead of revealing it.
+
+Correct: clip only the first and last child radii and let `.table-wrap` own horizontal scrolling, then assert both the wrapper fits and no control leaves the viewport.
+
+Wrong: a global `.panel + .panel { margin-top }` that also pushes the second column of a `.content-grid` down 20px.
+
+Correct: reset `margin-top` on `.content-grid > *` and assert both columns share one top edge.
 
 Wrong: `structuredClone(job)` where job is a Vue proxy, client-only status filtering over one server page, or polling only while status is running.
 
