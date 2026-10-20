@@ -17,18 +17,35 @@ export interface NavItem {
   icon: Component;
   /** Renders the enabled-task count badge in the sidebar. */
   badge?: 'jobs';
+  /** Section label rendered above the item. Consecutive items sharing a group
+   *  collapse into one labelled block, so grouping stays a property of this
+   *  single registry rather than a second hand-maintained menu array. */
+  group: string;
 }
 
 export type Page = 'overview' | 'jobs' | 'files' | 'runs' | 'storage' | 'settings';
 
 export const navItems: readonly NavItem[] = [
-  { id: 'overview', label: '备份概览', icon: LayoutDashboard },
-  { id: 'jobs', label: '备份任务', icon: Folder, badge: 'jobs' },
-  { id: 'files', label: '文件管理', icon: FolderOpen },
-  { id: 'runs', label: '执行记录', icon: Activity },
-  { id: 'storage', label: '远端存储', icon: HardDrive },
-  { id: 'settings', label: '系统设置', icon: Settings2 },
+  { id: 'overview', label: '备份概览', icon: LayoutDashboard, group: '工作区' },
+  { id: 'jobs', label: '备份任务', icon: Folder, badge: 'jobs', group: '工作区' },
+  { id: 'files', label: '文件管理', icon: FolderOpen, group: '工作区' },
+  { id: 'runs', label: '执行记录', icon: Activity, group: '监控' },
+  { id: 'storage', label: '远端存储', icon: HardDrive, group: '系统' },
+  { id: 'settings', label: '系统设置', icon: Settings2, group: '系统' },
 ];
+
+/** Consecutive runs of items sharing `group`, in registry order. */
+export interface NavSection {
+  label: string;
+  items: readonly NavItem[];
+}
+
+export const navSections: readonly NavSection[] = navItems.reduce<NavSection[]>((sections, item) => {
+  const last = sections.at(-1);
+  if (last && last.label === item.group) (last.items as NavItem[]).push(item);
+  else sections.push({ label: item.group, items: [item] });
+  return sections;
+}, []);
 
 export const isPage = (value: string): value is Page => navItems.some(item => item.id === value);
 

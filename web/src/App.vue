@@ -7,7 +7,7 @@ import {
 } from 'lucide-vue-next';
 import { api, ApiError, errorMessage, setCsrfToken, uploadArchive, write } from './api';
 import { bytes, dateTime, duration, phaseLabels, progress, shortTime, statusLabels } from './format';
-import { isPage, navItems, pageTitle, type Page } from './nav';
+import { isPage, navSections, pageTitle, type Page } from './nav';
 import type { Archive, AuthStatus, Job, Overview, Run, ToolStatus } from './types';
 import AccountMenu from './components/AccountMenu.vue';
 import JobEditor from './components/JobEditor.vue';
@@ -251,13 +251,14 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
   </main>
   <div v-else class="app-shell" :class="{ 'sidebar-collapsed': collapsed }">
     <div v-if="mobileNav" class="nav-scrim" @click="mobileNav = false" />
+    <header class="shell-header">
+      <div class="shell-brand"><button class="icon-button sidebar-toggle" type="button" :title="collapsed ? '展开导航' : '收起导航'" :aria-label="collapsed ? '展开导航' : '收起导航'" @click="toggleCollapsed"><PanelLeftOpen v-if="collapsed" :size="18" /><PanelLeftClose v-else :size="18" /></button><button class="icon-button mobile-menu" type="button" title="打开导航" aria-label="打开导航" @click="mobileNav = !mobileNav"><Menu :size="20" /></button><a class="brand" href="#overview" @click="navigate('overview')"><img src="/brand.svg" alt="" width="24" height="24" /><strong class="brand-text">AzureKiln Backup</strong></a><span class="shell-context">管理控制台</span></div>
+      <div class="topbar-actions"><span class="live-indicator"><i />{{ activeRuns.length ? `${activeRuns.length} 个执行中` : '系统在线' }}</span><button class="icon-button" :title="theme === 'dark' ? '浅色主题' : '深色主题'" :aria-label="theme === 'dark' ? '浅色主题' : '深色主题'" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="19" /><Moon v-else :size="19" /></button><AccountMenu :username="auth.user?.username" :theme="theme" @toggle-theme="toggleTheme" @logout="logout" /></div>
+    </header>
     <aside class="sidebar" :class="{ open: mobileNav, collapsed }">
-      <a class="brand" href="#overview" :title="collapsed ? 'AzureKiln Backup System' : undefined" @click="navigate('overview')"><img src="/brand.svg" alt="" width="35" height="35" /><div><strong>AzureKiln</strong><span>Backup System</span></div></a>
-      <nav class="main-nav" aria-label="主导航"><button v-for="item in navItems" :key="item.id" :class="{ active: page === item.id }" :title="collapsed ? item.label : undefined" @click="navigate(item.id)"><component :is="item.icon" :size="19" /><span>{{ item.label }}</span><span v-if="item.badge === 'jobs' && jobs.length" class="nav-count">{{ jobs.length }}</span></button></nav>
-      <button class="sidebar-collapse" type="button" :title="collapsed ? '展开导航' : '收起导航'" :aria-label="collapsed ? '展开导航' : '收起导航'" @click="toggleCollapsed"><PanelLeftOpen v-if="collapsed" :size="18" /><PanelLeftClose v-else :size="18" /><span>收起导航</span></button>
+      <nav class="main-nav" aria-label="主导航"><template v-for="section in navSections" :key="section.label"><div class="nav-group"><div class="nav-label">{{ section.label }}</div><button v-for="item in section.items" :key="item.id" :class="{ active: page === item.id }" :title="collapsed ? item.label : undefined" @click="navigate(item.id)"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span><span v-if="item.badge === 'jobs' && jobs.length" class="nav-count">{{ jobs.length }}</span></button></div></template></nav>
     </aside>
     <div class="workspace">
-      <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" title="打开导航" aria-label="打开导航" @click="mobileNav = !mobileNav"><Menu :size="21" /></button><span class="workspace-label">管理控制台</span></div><div class="topbar-actions"><span class="live-indicator"><i />{{ activeRuns.length ? `${activeRuns.length} 个执行中` : '系统在线' }}</span><button class="icon-button" :title="theme === 'dark' ? '浅色主题' : '深色主题'" :aria-label="theme === 'dark' ? '浅色主题' : '深色主题'" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="19" /><Moon v-else :size="19" /></button><AccountMenu :username="auth.user?.username" :theme="theme" @toggle-theme="toggleTheme" @logout="logout" /></div></header>
       <main class="main-content">
         <header class="page-heading"><h1>{{ title }}</h1><div class="heading-actions"><button v-if="['overview','jobs','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
         <div v-if="error" class="notice error" role="alert">{{ error }}<button class="icon-button" title="关闭错误提示" aria-label="关闭错误提示" @click="error = ''"><X :size="16" /></button></div>
