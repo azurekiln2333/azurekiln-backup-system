@@ -27,14 +27,20 @@ export const groupModeLabels: Record<GroupMode, string> = {
 /** Key of the bucket holding jobs that carry no tags. */
 export const UNGROUPED_KEY = '__untagged';
 
-const typeOrder: Job['type'][] = ['directory', 'vaultwarden', 'newapi', 'system'];
-const typeLabels: Record<Job['type'], string> = { directory: '目录备份', vaultwarden: 'Vaultwarden', newapi: 'NewAPI', system: '系统配置' };
+const typeOrder: Job['type'][] = ['directory', 'file', 'vaultwarden', 'newapi', 'system'];
+const typeLabels: Record<Job['type'], string> = { directory: '目录备份', file: '单文件备份', vaultwarden: 'Vaultwarden', newapi: 'NewAPI', system: '系统配置' };
 
 /** Parent directory of a path, or '' when there is none. Browser-safe (no node:path). */
 export function dirname(value: string) {
   const trimmed = value.replace(/[\\/]+$/, '');
   const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-  return index <= 0 ? (index === 0 ? trimmed.slice(0, 1) : '') : trimmed.slice(0, index);
+  if (index < 0) return '';
+  // A bare leading separator is the root itself: `/report.pdf` -> `/`.
+  if (index === 0) return trimmed.slice(0, 1);
+  const head = trimmed.slice(0, index);
+  // A Windows drive root keeps its separator: `D:\report.pdf` -> `D:\`, never `D:`, which is a
+  // drive-relative path and not a valid absolute source for the picker.
+  return /^[A-Za-z]:$/.test(head) ? `${head}${trimmed[index]}` : head;
 }
 
 /** The path a job's source lives at, mirroring the list's "source" column. */

@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Existing shell, site UI, independent request ownership and assertion-based layout/browser contracts."}
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Site persistence, authenticated API, many-to-many safety and system restore contracts."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/repository-contract.md", "reason": "Confirmed multi-repository metadata, notes, shared normalization, PATCH and legacy restore boundaries."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/frontend-density.md", "reason": "Actual newapi reference sources, compact layout options, title plus hostname-only address and measurable density targets."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/site-overview.md", "reason": "Available site/run data, truthful status derivation, overview scope options and replacement regression guards."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/storage-and-addresses.md", "reason": "Current SQLite/file persistence and user-confirmed domain-only display with complete saved link targets."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/shared-contract.md", "reason": "Four-Pi preflight locked exact shared export names, hostname-only row helper and preserved full editor address projection."}
+{"file": ".trellis/tasks/10-25-site-console-density/research/file-clone.md", "reason": "Single-file and paused server-side clone source seams; approved PRD/design override historical recommendations."}

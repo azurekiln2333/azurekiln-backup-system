@@ -9,13 +9,13 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - `api<T>(path)` reads `/api` and parses the standard JSON/error response.
 - `write<T>(path,body?,method?)` attaches the current CSRF token.
 - `JobEditor` accepts `{job?,initialType?,initialSourcePath?}` and emits `saved(job)` or `close`. Only new jobs use the initial source path.
-- `FileManagerView` emits `createJob(path)` from the current directory or a directory row; App opens a directory JobEditor with that source prefilled.
-- `PathPicker` accepts `{kind,remote?,initialPath?}` and emits an absolute source or relative remote path.
+- `FileManagerView` emits `createJob(path,type)` from the current directory or a directory/file row; App opens the corresponding directory/file JobEditor with that source prefilled.
+- `PathPicker` accepts `{kind,remote?,initialPath?,initialFile?,select?}`; `select` is `directory` by default or `file`. `initialPath` is the browsing directory; `initialFile` is the optional current filename, preselected only once after a listing confirms it is a regular file. Directories navigate in either mode; only a regular file is confirmable in file mode. It emits an absolute source or relative remote path.
 - `RunDetail` accepts `{id}` and polls until execution, cleanup, and notification settle.
 - `nav.ts` exports `navItems` (the page registry), the explicit `Page` union, `isPage(value)`, and `pageTitle(page)`. Extend both the union and registry when adding a page.
 - `errors.ts` exports `friendlyError(cause, fallback?)` and `rawError(cause)` for user-facing error copy.
 - `AccountMenu` accepts `{username?, theme}` and emits `toggle-theme` / `logout`; it owns the only sign-out entry point.
-- `JobsView` accepts `{jobs,overview?,busyId,activeJob,canRunJob}` and emits `create|open|run|edit|remove|toggle|toggleWatch`. It owns the list's search, enable filter, tag filter, grouping mode and collapse state; it never calls the API itself, so App stays the sole owner of data and mutations.
+- `JobsView` accepts `{jobs,overview?,busyId,activeJob,canRunJob}` and emits `create|open|run|edit|remove|toggle|toggleWatch|clone`. It owns the list's search, enable filter, tag filter, grouping mode and collapse state; it never calls the API itself, so App stays the sole owner of data and mutations.
 - `web/src/jobGroups.ts` exports `groupJobs(jobs,{mode,match})`, `readCollapsed/writeCollapsed(storage,mode)`, `readGroupMode/writeGroupMode(storage)`, `dirname` and `groupModeLabels`. `mode` is `none|tag|type|source`.
 
 ## 3. Contracts
@@ -32,7 +32,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - User-facing errors go through `friendlyError()`: low-level text (rclone `specify an existing rclone configuration file`, HTTP `not found`) is classified into actionable Chinese copy, and the original string is exposed only as a `title` tooltip via `rawError()`. An error panel and an empty-state block are mutually exclusive — never render both for the same failure.
 - File management is a read-only view of allowed source roots. A single root opens automatically on initial load; explicit navigation back to mounted roots must stay there. Search is case-insensitive within the entire current directory, with 100-entry pages. Source visibility comes from container mounts and SOURCE_ROOTS, not host filesystem discovery.
 - File navigation tracks the requested directory separately from successful results so retry replays the failed request. Search changes invalidate older requests before the debounce delay; stale responses cannot change the displayed directory. Refresh clamps pages when directory contents shrink. Breadcrumb containment handles trailing root separators and chooses the nearest configured root.
-- Clone an existing reactive task using `structuredClone(toRaw(job))`. The API never returns archive/database/SMTP/OIDC passwords.
+- Initialize an editor draft from a reactive task using `structuredClone(toRaw(job))`. Creating an actual cloned task uses the server clone endpoint so private secrets survive; public DTOs never return archive/database/SMTP/OIDC passwords.
 - Every task editor exposes an optional description. Lists use it as searchable secondary text, and the detail view shows the full saved value.
 - The built-in system task uses the same editor and version view, but its format remains encrypted 7z. The import dialog uploads a local archive and password, then reports that restart is required.
 - Settings storage view persists immediate/manual cleanup for successful local archives, shows actual temporary usage and retained archive size, and supports individual/bulk cleanup through authenticated APIs.
@@ -40,7 +40,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - Directory task editors expose the optional file-change watcher and its debounce interval. Older task DTOs may omit `watch`; initialize its defaults before editing. Task details show the authenticated overview's live watcher state or error. The editor also picks the watch mode (whole directory vs. only new/modified files). The task list has a per-directory-task watch switch that PATCHes only `{watch:{enabled}}`, keeping mode and debounce; turning it off is allowed while the source is missing, like pausing.
 - Task tags are edited as chips (Enter or comma adds, Backspace removes, suggestions come from existing tags). The task list shows tag chips, filters by a tag select or by clicking a chip, and includes tags in search. New directory tasks can switch to batch mode: the source becomes a parent folder, its subfolders are listed with checkboxes (folders already covered by a task are disabled), and saving posts to `/api/jobs/batch`.
 - Batch mode seeds the tag list with the parent folder's name so the created tasks land in one group. The suggestion is only filled when the tag list is empty, and is replaced (never duplicated) when the user edits the parent path; a tag the user typed is never overwritten.
-- The task list groups rows by `标签` / `类型` / `源父目录`, or stays flat. Filtering (`match`) runs before bucketing, so group counts follow the filtered set. Tag mode buckets by a job's first tag and collects untagged jobs in a trailing `未分组` group (the built-in system task is untagged, so tag grouping always shows that bucket); type mode keeps directory → vaultwarden → newapi → system order, and `typeLabels`/`typeOrder` must be extended whenever `jobSchema.type` gains a member or `Record<Job['type'], string>` fails to compile; source mode groups by the source's parent directory. Group headers show the label, count and failure count — never the page title or a repeat of the column headers.
+- The task list groups rows by `标签` / `类型` / `源父目录`, or stays flat. Filtering (`match`) runs before bucketing, so group counts follow the filtered set. Tag mode buckets by a job's first tag and collects untagged jobs in a trailing `未分组` group (the built-in system task is untagged, so tag grouping always shows that bucket); type mode keeps directory → file → vaultwarden → newapi → system order, and `typeLabels`/`typeOrder` must be extended whenever `jobSchema.type` gains a member or `Record<Job['type'], string>` fails to compile; source mode groups by the source's parent directory. Group headers show the label, count and failure count — never the page title or a repeat of the column headers.
 - A non-empty search forces every group open, because a hit inside a collapsed group would otherwise be invisible; the persisted collapse state is left untouched and reapplies when the search clears. Collapse state and the chosen mode live in `backup-job-groups:<mode>` and `backup-jobs-group-mode`; every `localStorage` access is wrapped in `try/catch` and a throwing or corrupt store degrades to "nothing collapsed" rather than breaking rendering.
 - "Collapse all" is disabled only when every group is already collapsed, and "Expand all" only when nothing is collapsed (`allCollapsed` vs `anyCollapsed`). Inverting these makes the everyday action unreachable — an earlier revision wired `!allCollapsed` onto collapse-all and the button shipped disabled. Cover both buttons in a browser check, not just in unit tests.
 - Empty password fields preserve credentials. Task editor validates with shared schema and selects the relevant tab for missing fields. Hidden tabs must not block native form submission.
@@ -77,7 +77,9 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 
 Run `npm run check`, `npm run build`, `npm run check:layout`, and `npm run check:browser`. The browser scripts require installed Chromium and real rclone/7-Zip tools. They use isolated temporary state and local alias destinations, checks setup/config import/pickers/editor/execution/download/settings/login, and writes desktop/mobile/light/dark screenshots under `.artifacts/screenshots/` and `.artifacts/layout/`. File-browser assertions cover search before pagination, empty states, page shrink, missing-directory retry, stale directory/root responses, search responses arriving during the debounce delay, and both source-prefill actions. Freeze the browser clock for debounce race checks so assertions do not depend on network speed. Do not populate the user's real installation with fixtures.
 
-`npm run check:layout` is the layout acceptance gate and must stay assertion-based. It walks all seven pages across 1440/768/390/360 in both themes and asserts: one `<h1>` per page, the fixed `管理控制台` shell context, header 48px/sticky/sibling-of-`.workspace`, rail 208px (44px collapsed), workspace inset 216/56 with an 8px radius, `main` at 1600px centred (verified at 1920), container radii within the 8px scale, no legacy layout classes (`.page-band`, `.section-heading`, `.metrics`, `.overview-columns`), no horizontal document overflow, no visible control outside the viewport, every table/toolbar/form inside a `.panel`, exactly one visible navigation toggle per width, an accessible name on the brand link, the stats band borderless/transparent at `18px 20px` with 24px icons, `content-grid` columns top-aligned at 1.6fr:1fr on desktop and full-width stacked at a 20px gap below 1100px, sticky `th` plus `overscroll-behavior-inline: contain` on `.table-wrap`, and a genuinely scrolled settings page in a 500px-tall viewport. The overview task list must contain the built-in `系统配置` row in **every** viewport/theme combination, with a non-zero row count and a visible name/icon/source per row - the guard must not be skipped when zero rows render. Never weaken these to print-only probes: the earlier "44 screenshots passed but the layout was still the old one" round failed exactly because the checks could not fail. Prove a new guard can fail by temporarily reintroducing the defect before shipping it.
+`npm run check:layout` is the assertion-based acceptance gate: seven pages × four widths (1440/768/390/360) × two themes. Preserve one h1, fixed shell context, sticky 48px header outside the workspace, 208/44px desktop rail, 216/56px workspace inset, 8px radius scale, 1600px centred main, contained structures/controls/scrollers, no document overflow or legacy layout classes, accessible brand/navigation, borderless transparent stats with 24px icons, top-aligned 1.6fr:1fr desktop content columns, narrow stacking, sticky table headers and a genuinely scrolled settings page. Compact presentation replaces obsolete wide spacing assertions: main title 18–20px, main inset 12–16px at tested content widths, panel headings 40–48px and desktop controls 32–36px. Inspect actual screenshots and measure useful complete rows; screenshot counts alone cannot pass the gate.
+
+Every overview viewport/theme must render a nonzero site preview with visible title, first hostname, repository labels and real linked task labels, plus all-sites navigation. Use the same eight sites' preexisting name/domain/tag/job values before/after; the old UI had no repositories/notes. Each final standard row adds two repositories and a short note. At 1440×900 require at least six complete rows with maximum standard height 104px; at 390×844 and 360×780 require at least three with maximum height 156px. Long/many-link exceptions may grow. Production guards must throw when site names/hostnames/repositories/job labels are hidden or row padding is increased, then pass after faults are removed. Never skip guards for zero rows or replace assertions with diagnostic prints.
 
 Also run `node scripts/ui-radius-audit.mjs`; it scans `web/src/**/*.{vue,css}` and must report zero violations.
 
@@ -99,9 +101,9 @@ Wrong: a global `.panel + .panel { margin-top }` that also pushes the second col
 
 Correct: reset `margin-top` on `.content-grid > *` and assert both columns share one top edge.
 
-Wrong: fixing a horizontal overflow by giving the primary cell `width: 0` / `overflow: hidden` while the row is (or has become) a block container - the primary information silently disappears and only the status chip and action button remain.
+Wrong: fixing horizontal overflow by zeroing or hiding a primary information cell, leaving only status/actions, or claiming density through clipping useful site/task labels.
 
-Correct: keep `.overview-job` a `display: flex` row with its own padding and gap, let the primary cell be `flex: 1 1 0%` and ellipsize its inner `strong`/`span`, and assert on every viewport and theme that the row count is non-zero and each row's name has `width > 0`, an icon and a source.
+Correct: shared `.site-row` uses real grid/flex tracks with nonzero primary widths, title/first-hostname on one identity line, natural secondary wrapping and visible linked task labels. Assert nonzero row count and useful labels on every viewport/theme, with full accessible values for intentional ellipsis.
 
 Wrong: hiding the wordmark with `display: none` on narrow screens while the brand `<img>` has `alt=""`, leaving the home link with no accessible name.
 
@@ -143,9 +145,13 @@ Apply to `#sites`, site editing/filtering, reverse job associations, and indepen
 ### 3. Contracts
 
 - Navigation includes `sites` in both `Page` and the registry, with the single shell h1 `站点管理`. Content remains inside existing panels with the radius scale and mobile drawer.
-- Show saved site name, wrapping HTTP(S) address links, site tag chips and actual linked job names/types/run states on the page. Use shared `siteDomainLink` for both canonical href and display label, with `noopener noreferrer` for new tabs; validation never probes a domain.
-- Site search covers name/domain/tag; site tags remain independent of job tags. Linked/unlinked counts and filtering use saved `backupJobIds`, even when job details are unavailable.
+- `SiteRow` is shared by the site list and overview preview. Its identity line shows the saved name plus only the first saved address's hostname, using shared `siteDomainHostname` for display and `siteDomainLink` for the complete safe href (including port/path/query/fragment). All saved addresses/order remain editable; invalid legacy values render as plain nonlinks. Use `noopener noreferrer` for new tabs. Address links are transparent navigation text, distinct from filled classification tags.
+- Show actual repository labels with bundled GitHub/CNB/Gitee/GitCode marks, a nonempty one-line plain-text notes preview, tags and real linked job names/types/latest states. Multiple same-provider links retain distinct accessible names and full targets; no provider network requests or runtime favicon dependency. Full notes are accessible in the editor. Standard rows use natural layout, not fixed-height clipping; long/many-link content can grow.
+- Site search covers name/domain/tag/repository URL/notes; site tags remain independent of job tags. Linked/unlinked counts and filtering use saved `backupJobIds`, even when job details are unavailable. Editor uses shared metadata limits/defaults, retains failed drafts and preserves omitted versus explicit-clear semantics.
+- Overview keeps its existing title, four metric meanings, current execution, runtime environment and recent runs. Only its job preview becomes `站点列表`, showing up to six sites in saved order, total count, all-sites navigation and a create-site empty action. Normal task operations remain accessible. Render independently successful site/job data while overview fails or is pending; unavailable summaries must not invent zero/idle states. Latest attempt does not certify whole-site recoverability.
 - Load sites and jobs independently of overview/runs. A rejected sibling request must not suppress the site request. `loaded` distinguishes a successfully empty inventory from a list never read; `jobsLoaded` distinguishes unresolved details from deletion. Keep the refresh guard active until all independent loads settle, and do not let another request's success clear a failure notice.
+- Authentication boot waits for `/auth/status` and installs CSRF, then starts the resource refresh without awaiting it. Never keep `authLoading` true while dashboard resources load: a held `/overview` request must still allow the authenticated shell and independently loaded sites/jobs to render.
+- A failed initial job read shows error/retry rather than an empty-success list. Overview activity derives from its successfully read summary, independently of `/jobs`. Preserve last-good content after refresh failures with a visible error/stale notice and retry, including silent overview polls and previously empty site inventories; only a successful read clears that resource's stale state.
 - Drop stale site responses with request epochs. Clone form values once on mount; polling must not replace a draft or close it when its saved site disappears. Warn and retain the draft. A failed save also retains values.
 - Validate the entire submitted site with shared `siteSchema`; show field messages and a useful Chinese explanation for `SITE_JOB_NOT_FOUND`/`SITE_NOT_FOUND`. Raw failures belong in tooltips. A missing selected ID can be explicitly removed only after a successful job-list read; failed reads never silently clear associations.
 - Job deletion refreshes the site projection explicitly. Automatic unlink does not change site `updatedAt`, so timestamps cannot establish relation freshness.
@@ -170,12 +176,60 @@ Apply to `#sites`, site editing/filtering, reverse job associations, and indepen
 
 ### 6. Tests Required
 
-`check:browser` exercises real site CRUD/shared links, name/domain/tag filtering, forward and reverse navigation, read retry, polling draft preservation, failed saves, safe unlink/delete, reload persistence, and independent overview/job failures. Keep intentional HTTP failures scoped in console-error handling; do not suppress unrelated browser errors.
+`check:browser` exercises real site CRUD/shared links, name/domain/tag/repository-only/notes-only filtering, exact full href with hostname-only display, all editor addresses, literal multiline remarks, same-provider repository distinction, forward/reverse navigation, retries, polling/failed-save draft preservation, safe unlink/delete, persistence and independent failed/pending overview/job requests. Keep intentional HTTP failures scoped in console-error handling; do not suppress unrelated browser errors.
 
-The layout matrix now has **seven pages × four widths × two themes = 56 asserted renders**, plus existing supplements. Populate two sites and multiple/shared tasks through authenticated APIs, await actual labels, and assert site/domain/job names visibly render at each width/theme. Reuse the production guard in three fault injections hiding name/domain/job labels, asserting it throws and then passes after removal. Retain every existing shell/overview/scroll/radius guard, and inspect actual desktop/mobile/light/dark screenshots.
+The layout matrix has **seven pages × four widths × two themes = 56 asserted renders**, plus existing supplements and density evidence. Populate the eight standard sites and shared tasks through authenticated APIs; assert site/hostname/repository/job visibility and complete-row density. Reuse production guards for name/hostname/repository/job visibility and oversized-padding fault injections. Retain shell/containment/scroll/radius checks and inspect desktop/mobile/light/dark screenshots.
 
 ### 7. Wrong vs Correct
 
 Wrong: `Promise.all([overview,jobs,runs]).then(loadSites)`, treating `jobs=[]` after a failed fetch as deletion, or replacing a mounted editor's draft whenever sites refresh.
 
 Correct: independently load each resource with honest success/error flags, preserve saved association IDs, and keep the editor's mounted draft separate from refreshed authoritative records.
+
+## Single-file editor and task cloning
+
+### 1. Scope / Trigger
+
+Apply to job creation/type selection, source pickers, file management and ordinary-task clone actions. App remains the mutation owner.
+
+### 2. Signatures
+
+- Job type and initial-type unions include `file`; type order is directory → file → Vaultwarden → newapi → system.
+- File-manager `createJob(path,'file')` opens the single-file editor with the exact path prefilled.
+- File-mode PathPicker browses directories and confirms one regular file; remote/directory modes retain their existing behavior.
+- App calls `POST /jobs/:id/clone` and opens the returned public paused Job for editing after refreshing jobs/sites.
+
+### 3. Contracts
+
+- Single-file editors label the input `源文件`, offer `浏览源文件`/`选择此文件`, and keep manual/scheduled archive/retention/destination settings. Hide directory batch/watch/incremental/exclusion controls and normalize file exclusions to `[]` before client schema parsing. The API is authoritative for file type/path safety.
+- System backup-content help renders only for `type === 'system'`. Directory/file editors must never inherit it through a fallback `else` branch; browser assertions cover the file editor and a copied directory editor.
+- Browsing an existing file starts at its parent, preserving drive-root separators on Windows, never requests `/sources?path=<file>`, and preselects only once if that directory listing confirms the file. Every subsequent read clears selection so removed or navigated-away files cannot remain confirmable. Show selected filename and mutually exclusive loading/error/empty states.
+- `复制任务` is available for ordinary jobs in list/detail, with pending submission protection. Clone on the server rather than repost a public DTO; preserve configured-secret flags and allow saving without re-entering unchanged secrets. The returned clone is paused and has no copied runtime history. Keep schedule/watch configuration inert until enable.
+- Hide system clone actions. A failed clone request shows its actual error without a phantom row or editor. A successful clone refreshes both jobs and sites so reverse associations reflect the transaction. Editing or deleting a clone does not modify the original.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| File source missing locally | Explain the source-file requirement on the basic tab |
+| Picker has no selected regular file / read in flight or failed | Disable file confirmation |
+| File source rejected by server | Keep editor values and surface the error |
+| Clone request fails | Show error; job count and authoritative list remain unchanged |
+| System clone rejected | Explain that the fixed system task cannot be copied |
+| Clone has configured secrets but empty password inputs | Save preserves the server-side values |
+
+### 5. Good / Base / Bad Cases
+
+- Good: choose a file in the real picker, save, manually run it, and inspect the completed backup; copy an encrypted task, edit the paused copy without entering a password and retain its site links.
+- Base: a zero-byte file is valid, a file without a watcher shows no directory controls, and a system row has no clone action.
+- Bad: browsing the file as a directory, carrying stale selection across navigation, or cloning the redacted DTO and losing its secrets.
+
+### 6. Tests Required
+
+The real browser gate must exercise file prefill/browse/navigation/selection, file save and manual execution, clone success/default pause, saving the copy without secret re-entry and an injected clone failure with unchanged job count. Server tests establish actual file extraction and private-secret preservation. Keep intentional HTTP-error exemptions scoped to the specific injected request.
+
+### 7. Wrong vs Correct
+
+Wrong: `POST /jobs` with `structuredClone(toRaw(publicJob))`, or pass an existing filename as the directory listing path.
+
+Correct: call the server clone endpoint, and keep file browsing-directory and selected-file values separate.

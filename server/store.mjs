@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { jobSchema, settingsSchema, siteSchema } from '../shared/contracts.mjs';
+import { jobSchema, settingsSchema, siteSchema, SITE_BACKUP_JOB_LIMIT } from '../shared/contracts.mjs';
 import { AppError } from './config.mjs';
 
 const jobSecrets = [['archive', 'password'], ['vaultwarden', 'database', 'password'], ['newapi', 'database', 'password'], ['newapi', 'logDatabase', 'password']];
@@ -121,11 +121,16 @@ export function createStore(config) {
   const lastRunSummary = (run) => Object.fromEntries(['id', 'status', 'phase', 'startedAt', 'finishedAt', 'createdAt', 'archiveBytes', 'error', 'progress'].map((field) => [field, run[field] ?? null]));
   // Associations live only in site_jobs; the public site projection always reads the live link set.
   const siteJobIds = (siteId) => db.prepare('SELECT job_id FROM site_jobs WHERE site_id=? ORDER BY rowid').all(siteId).map((row) => row.job_id);
+  // Reverse direction used by cloning: the sites currently linked to one job (insertion order).
+  const siteIdsForJob = (jobId) => db.prepare('SELECT site_id FROM site_jobs WHERE job_id=? ORDER BY rowid').all(jobId).map((row) => row.site_id);
   const siteView = (id, data) => ({
     id,
     name: data.name ?? '',
     domains: data.domains ?? [],
     tags: data.tags ?? [],
+    // Legacy records predate these fields; default them here independently of the shared schema defaults.
+    repositoryUrls: data.repositoryUrls ?? [],
+    notes: data.notes ?? '',
     backupJobIds: siteJobIds(id),
     createdAt: data.createdAt ?? null,
     updatedAt: data.updatedAt ?? null,
@@ -180,6 +185,40 @@ export function createStore(config) {
       db.prepare('UPDATE jobs SET data=? WHERE id=?').run(encode(next, jobSecrets), id);
       return store.getJob(id);
     },
+    // Clone an existing task as a paused copy: fresh identity, retained configuration/secrets/destination IDs and the
+    // same site associations. Run history, queue state, next run and watch baselines are deliberately not copied.
+    cloneJob(sourceId, input) {
+      const source = store.getJob(sourceId, { includeSecrets: true });
+      if (!source) throw new AppError('Backup task does not exist.', 404, 'JOB_NOT_FOUND');
+      if (sourceId === SYSTEM_JOB_ID) throw new AppError('The built-in system configuration task cannot be cloned.', 409, 'SYSTEM_JOB_CLONE_FORBIDDEN');
+      // Validated input may already carry secrets; retaining from the source keeps sealed values when it does not.
+      const parsed = retainSecrets(jobSchema.parse(input), source, jobSecrets);
+      const now = new Date().toISOString();
+      const job = {
+        ...parsed,
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+        // The copy starts paused; retained schedule/watch configuration stays inert until the operator enables it.
+        enabled: false,
+        nextRunAt: null,
+        lastRun: null,
+        // Destination IDs are job-scoped in retention, so preserving them is safe; legacy entries without an ID get one.
+        destinations: parsed.destinations.map((destination) => ({ ...destination, id: destination.id || randomUUID() })),
+      };
+      return inTransaction(() => {
+        const siteLinks = siteIdsForJob(sourceId);
+        const countLinks = db.prepare('SELECT count(*) AS count FROM site_jobs WHERE site_id=?');
+        for (const siteId of siteLinks) {
+          // Adding the copy would exceed a site's link cap; fail atomically rather than create an over-limit record.
+          if (countLinks.get(siteId).count >= SITE_BACKUP_JOB_LIMIT) throw new AppError('A linked site already has the maximum number of backup tasks.', 409, 'SITE_JOB_LIMIT_REACHED');
+        }
+        db.prepare('INSERT INTO jobs(id,data) VALUES(?,?)').run(job.id, encode(job, jobSecrets));
+        const link = db.prepare('INSERT INTO site_jobs(site_id,job_id) VALUES(?,?)');
+        for (const siteId of siteLinks) link.run(siteId, job.id);
+        return store.getJob(job.id);
+      });
+    },
     deleteJob(id) {
       if (id === SYSTEM_JOB_ID) return false;
       // site_jobs rows are removed by ON DELETE CASCADE, so links are cleaned without touching site metadata.
@@ -199,7 +238,7 @@ export function createStore(config) {
       if (id && !previous) throw new AppError('Site does not exist.', 404, 'SITE_NOT_FOUND');
       const parsed = siteSchema.parse(previous ? mergeConfig(previous, input) : input);
       const now = new Date().toISOString();
-      const record = { name: parsed.name, domains: parsed.domains, tags: parsed.tags, createdAt: previous?.createdAt || now, updatedAt: now };
+      const record = { name: parsed.name, domains: parsed.domains, tags: parsed.tags, repositoryUrls: parsed.repositoryUrls, notes: parsed.notes, createdAt: previous?.createdAt || now, updatedAt: now };
       return inTransaction(() => {
         const findJob = db.prepare('SELECT 1 AS present FROM jobs WHERE id=?');
         const missing = parsed.backupJobIds.filter((jobId) => !findJob.get(jobId));

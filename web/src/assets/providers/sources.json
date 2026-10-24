@@ -1,0 +1,48 @@
+{
+  "retrievedAt": "2026-10-25",
+  "assets": [
+    {
+      "provider": "GitHub",
+      "files": [
+        "github-black.svg",
+        "github-white.svg"
+      ],
+      "source": "https://brand.github.com/GitHub_Logos.zip",
+      "evidence": "https://brand.github.com/foundations/logo",
+      "transform": "Extracted GitHub Logos/SVG/GitHub_Invertocat_Black.svg and GitHub_Invertocat_White.svg, bytes unchanged."
+    },
+    {
+      "provider": "CNB",
+      "files": [
+        "cnb-color.svg",
+        "cnb-black.svg",
+        "cnb-white.svg"
+      ],
+      "source": [
+        "https://docs.cnb.cool/images/logo/svg/Symbol-Color.svg",
+        "https://docs.cnb.cool/images/logo/svg/Symbol-Black.svg",
+        "https://docs.cnb.cool/images/logo/svg/Symbol-White.svg"
+      ],
+      "evidence": "https://docs.cnb.cool/zh/logo.html",
+      "transform": "Unchanged official icon-only SVGs."
+    },
+    {
+      "provider": "Gitee",
+      "files": [
+        "gitee.svg"
+      ],
+      "source": "https://gitee.com/static/images/logo.svg",
+      "evidence": "https://gitee.com/",
+      "transform": "Copied the original icon-only Group (red circle and white G) into a 90x90 SVG; removed the separate wordmark and canceling page-position transforms. Paths/colors unchanged."
+    },
+    {
+      "provider": "GitCode",
+      "files": [
+        "gitcode.svg"
+      ],
+      "source": "https://docs.gitcode.com/img/logo.svg",
+      "evidence": "https://docs.gitcode.com/",
+      "transform": "Extracted the original independent red icon path into a 24x24 SVG; wordmark removed, icon geometry/color unchanged. The official logo asset remains available while current homepage/docs brand as AtomGit. Keep requested provider display name GitCode and original repository URLs. Official 96x96 PNG favicon is also saved as optional gitcode.png."
+    }
+  ]
+}

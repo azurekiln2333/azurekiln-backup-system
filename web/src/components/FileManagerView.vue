@@ -5,7 +5,7 @@ import { api, errorMessage } from '../api';
 import { bytes, dateTime } from '../format';
 import type { SourceEntry, SourceListing } from '../types';
 
-const emit = defineEmits<{ createJob: [path: string] }>();
+const emit = defineEmits<{ createJob: [path: string, kind: 'directory' | 'file'] }>();
 const roots = ref<string[]>([]);
 const currentPath = ref('');
 const requestedPath = ref('');
@@ -111,7 +111,7 @@ void load('', 0);
       <div v-if="error" class="notice error" role="alert">{{ error }}<button class="button secondary small" @click="load()">重试</button></div>
       <div v-if="requestedPath" class="files-actions">
         <div class="files-location"><HardDrive :size="17" /><span class="mono" :title="requestedPath">{{ requestedPath }}</span></div>
-        <button class="button secondary small" :disabled="loading || !!error" @click="emit('createJob', requestedPath)"><Plus :size="15" />备份此目录</button>
+        <button class="button secondary small" :disabled="loading || !!error" @click="emit('createJob', requestedPath, 'directory')"><Plus :size="15" />备份此目录</button>
       </div>
       <div class="files-list-toolbar">
         <button class="icon-button bordered" title="上一级" aria-label="上一级" :disabled="!requestedPath" @click="open(navigationParent ?? '')"><ArrowUp :size="18" /></button>
@@ -128,7 +128,7 @@ void load('', 0);
         <td class="muted">{{ entry.isDirectory ? '目录' : '文件' }}</td>
         <td class="muted nowrap">{{ entry.isDirectory ? '—' : bytes(entry.size) }}</td>
         <td class="muted nowrap">{{ dateTime(entry.modifiedAt) }}</td>
-        <td><button v-if="entry.isDirectory" class="icon-button" title="备份此目录" :aria-label="`备份目录 ${entry.name}`" @click="emit('createJob', entry.path)"><Plus :size="17" /></button></td>
+        <td><button v-if="entry.isDirectory" class="icon-button" title="备份此目录" :aria-label="`备份目录 ${entry.name}`" @click="emit('createJob', entry.path, 'directory')"><Plus :size="17" /></button><button v-else class="icon-button" title="备份此文件" :aria-label="`备份文件 ${entry.name}`" @click="emit('createJob', entry.path, 'file')"><Plus :size="17" /></button></td>
         </tr></tbody>
         </table></div>
     </div>

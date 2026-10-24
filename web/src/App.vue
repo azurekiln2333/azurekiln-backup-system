@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
-  Activity, Archive as ArchiveIcon, ArrowRight, Check, CheckCircle2, ChevronRight, CircleAlert, Clock3,
-  Database, Download, FileArchive, Folder, HardDrive, KeyRound, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Play,
+  Activity, Archive as ArchiveIcon, ArrowRight, Check, CheckCircle2, ChevronRight, CircleAlert, Clock3, Copy,
+  Database, Download, FileArchive, Folder, Globe, HardDrive, KeyRound, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Play,
   Plus, RefreshCw, Settings2, ShieldCheck, Sun, Trash2, Pencil, X,
 } from 'lucide-vue-next';
 import { api, ApiError, errorMessage, setCsrfToken, uploadArchive, write } from './api';
@@ -18,6 +18,7 @@ import Modal from './components/Modal.vue';
 import RunDetail from './components/RunDetail.vue';
 import SettingsView from './components/SettingsView.vue';
 import StorageView from './components/StorageView.vue';
+import SiteRow from './components/SiteRow.vue';
 import SitesView from './components/SitesView.vue';
 import SiteEditor from './components/SiteEditor.vue';
 
@@ -41,6 +42,8 @@ const setupToken = ref('');
 const error = ref('');
 const refreshing = ref(false);
 const loaded = ref(false);
+/** Set when the newest /overview read failed while last-good data is still shown. */
+const overviewStale = ref(false);
 const overview = ref<Overview>();
 const jobs = ref<Job[]>([]);
 /**
@@ -48,6 +51,10 @@ const jobs = ref<Job[]>([]);
  * an unattempted or failed task list is never shown as "no tasks"/"deleted".
  */
 const jobsLoaded = ref(false);
+/** True only while the current /jobs read is in flight; loading is never inferred from `!jobsLoaded`. */
+const jobsLoading = ref(false);
+/** Localized message of the newest failed /jobs read; the last good list is retained. */
+const jobsError = ref('');
 const sites = ref<Site[]>([]);
 const sitesLoading = ref(false);
 const sitesLoaded = ref(false);
@@ -66,7 +73,7 @@ const runFilter = ref('');
 const runStatusFilter = ref('');
 const editing = ref(false);
 const editJob = ref<Job>();
-const initialType = ref<'directory' | 'vaultwarden'>('directory');
+const initialType = ref<'directory' | 'file' | 'vaultwarden' | 'newapi'>('directory');
 const initialSourcePath = ref('');
 const selectedJob = ref<Job>();
 const jobDetailTab = ref('summary');
@@ -86,10 +93,36 @@ const toast = ref('');
 let toastTimer: number;
 let pollTimer: number;
 let runsRequest = 0;
+let jobsRequest = 0;
 const filteredRuns = computed(() => runs.value);
 const recentRuns = computed(() => overview.value?.recentRuns.slice(0, 6) ?? []);
-const activeRuns = computed(() => jobs.value.flatMap(job => job.lastRun && ['queued', 'running'].includes(job.lastRun.status)
+/**
+ * Active runs come from the successful overview payload, which is authoritative
+ * about the task list. `/jobs` is only a fallback for the first paint, and a
+ * failed or never-completed /jobs read must never look like an idle queue.
+ */
+const activeRuns = computed(() => (overview.value?.jobs ?? (jobsLoaded.value ? jobs.value : [])).flatMap(job => job.lastRun && ['queued', 'running'].includes(job.lastRun.status)
   ? [{ ...job.lastRun, jobId: job.id, jobName: job.name, type: job.type }] : []));
+/**
+ * True only while the current page's own first read is still in flight.
+ * Sites and tasks load independently, so their data renders immediately instead
+ * of waiting behind /overview (which may fail or be slow).
+ */
+/**
+ * True while /overview is genuinely still being read. A failed read leaves
+ * `loaded` false forever, so "pending" must key off the in-flight refresh and
+ * the absence of an error, never off `loaded`.
+ */
+const overviewPending = computed(() => !overview.value && refreshing.value && !error.value);
+const dataPending = computed(() => {
+  if (error.value) return false;
+  if (page.value === 'overview') return !overview.value && !sitesLoaded.value && !jobsLoaded.value;
+  // Loading is tied to an in-flight read, never to a failed one: a failed poll keeps
+  // the last good list on screen instead of hiding it behind an endless loading line.
+  if (page.value === 'jobs') return jobsLoading.value && !jobs.value.length;
+  if (page.value === 'runs') return !loaded.value && !runs.value.length;
+  return false;
+});
 const tools = computed(() => {
   const value = overview.value?.tools ?? {};
   const labels: Record<string, string> = { rclone: 'rclone', sevenZip: '7-Zip', tar: 'tar', sqlite: 'SQLite', pgDump: 'PostgreSQL', mysqlDump: 'MariaDB' };
@@ -97,7 +130,7 @@ const tools = computed(() => {
     .map(([key, tool]) => ({ key, label: labels[key] ?? key, ...(typeof tool === 'boolean' ? { available: tool } : tool as ToolStatus) }));
 });
 const sourcePath = (job: Job) => job.type === 'system' ? '本系统配置' : job.type === 'vaultwarden' ? job.vaultwarden.dataDir : job.type === 'newapi' ? job.newapi.dataDir : job.sourcePath;
-const typeLabel = (type: Job['type']) => type === 'system' ? '系统配置' : type === 'vaultwarden' ? 'Vaultwarden' : type === 'newapi' ? 'NewAPI' : '目录备份';
+const typeLabel = (type: Job['type']) => type === 'system' ? '系统配置' : type === 'file' ? '单文件备份' : type === 'vaultwarden' ? 'Vaultwarden' : type === 'newapi' ? 'NewAPI' : '目录备份';
 const selectedJobSites = computed(() => selectedJob.value ? sites.value.filter(site => site.backupJobIds.includes(selectedJob.value!.id)) : []);
 const activeJob = (id: string) => activeRuns.value.some(run => run.jobId === id);
 const canRunJob = (job: Job) => job.type !== 'system' || (job.destinations.length > 0 && Boolean(job.archive.passwordSet));
@@ -123,7 +156,8 @@ function toggleTheme() { theme.value = theme.value === 'dark' ? 'light' : 'dark'
 watch(theme, value => { document.documentElement.dataset.theme = value; localStorage.setItem('backup-theme', value); }, { immediate: true });
 async function refreshAuth() {
   auth.value = await api<AuthStatus>('/auth/status'); setCsrfToken(auth.value.csrfToken);
-  if (auth.value.authenticated) await refresh();
+  // Authentication unlocks the shell independently of slower dashboard resources.
+  if (auth.value.authenticated) void refresh();
 }
 async function settingsSaved() {
   try { await refreshAuth(); }
@@ -146,7 +180,7 @@ async function authenticate() {
   finally { authBusy.value = false; }
 }
 async function logout() {
-  try { await write('/auth/logout'); auth.value = await api('/auth/status'); setCsrfToken(''); jobs.value = []; jobsLoaded.value = false; runs.value = []; overview.value = undefined; loaded.value = false; selectedJob.value = undefined; selectedRun.value = ''; sitesRequest += 1; sites.value = []; sitesLoaded.value = false; sitesLoading.value = false; sitesError.value = ''; sitesErrorDetail.value = ''; editingSite.value = undefined; siteEditorOpen.value = false; deletingSite.value = undefined; }
+  try { await write('/auth/logout'); auth.value = await api('/auth/status'); setCsrfToken(''); jobs.value = []; jobsLoaded.value = false; jobsRequest += 1; jobsLoading.value = false; jobsError.value = ''; runs.value = []; overview.value = undefined; loaded.value = false; overviewStale.value = false; selectedJob.value = undefined; selectedRun.value = ''; sitesRequest += 1; sites.value = []; sitesLoaded.value = false; sitesLoading.value = false; sitesError.value = ''; sitesErrorDetail.value = ''; editingSite.value = undefined; siteEditorOpen.value = false; deletingSite.value = undefined; }
   catch (cause) { error.value = errorMessage(cause); }
 }
 async function loadRuns() {
@@ -194,9 +228,12 @@ async function refresh(silent = false) {
   let failed = false;
   try {
     const [summary] = await Promise.all([api<Overview>('/overview'), loadRuns()]);
-    overview.value = summary; loaded.value = true;
+    overview.value = summary; loaded.value = true; overviewStale.value = false;
   } catch (cause) {
     failed = true;
+    // A silent poll failure keeps the last-good overview, so it must be flagged:
+    // stale metrics must never be presented as a fresh reading.
+    overviewStale.value = true;
     if (!handleUnauthorized(cause) && !silent) error.value = errorMessage(cause);
   }
   try {
@@ -220,25 +257,40 @@ function handleUnauthorized(cause: unknown) {
   return true;
 }
 /**
- * Task list with its own success flag. `jobs` keeps the last good list, but
- * `jobsLoaded` records whether the newest read actually succeeded.
+ * Task list with its own loading/error state. `jobs` keeps the last good list,
+ * `jobsLoaded` records whether the newest read succeeded, and `jobsLoading` is
+ * true only while a read is in flight, so a failed poll never looks like loading.
+ * A superseded response is dropped rather than overwriting the newer outcome.
  */
 async function loadJobs(silent = false): Promise<boolean> {
+  const request = ++jobsRequest;
+  jobsLoading.value = true;
   try {
     const list = await api<Job[]>('/jobs');
+    // Superseded by a newer read: that read owns the outcome.
+    if (request !== jobsRequest) return true;
     jobs.value = list;
     jobsLoaded.value = true;
+    jobsError.value = '';
+    jobsLoading.value = false;
     if (selectedJob.value) selectedJob.value = list.find(job => job.id === selectedJob.value?.id);
     return true;
   } catch (cause) {
+    if (request !== jobsRequest) return true;
     jobsLoaded.value = false;
+    // Retain the last good list, but keep the failure visible: a failed read must
+    // never be presented as a loading state, an idle queue or an empty task list.
+    const unauthorized = handleUnauthorized(cause);
+    if (!unauthorized) jobsError.value = errorMessage(cause);
+    jobsLoading.value = false;
+    if (unauthorized) return false;
     if (!handleUnauthorized(cause) && !silent) error.value = errorMessage(cause);
     return false;
   }
 }
 watch([runFilter, runStatusFilter], () => { runsPage.value = 0; if (auth.value?.authenticated) void loadRuns().catch(cause => { error.value = errorMessage(cause); }); });
 watch(runsPage, () => { if (auth.value?.authenticated) void loadRuns().catch(cause => { error.value = errorMessage(cause); }); });
-function createJob(type: 'directory' | 'vaultwarden' = 'directory', source = '') { editJob.value = undefined; initialType.value = type; initialSourcePath.value = source; editing.value = true; }
+function createJob(type: 'directory' | 'file' | 'vaultwarden' | 'newapi' = 'directory', source = '') { editJob.value = undefined; initialType.value = type; initialSourcePath.value = source; editing.value = true; }
 function edit(job: Job) { editJob.value = job; initialSourcePath.value = ''; editing.value = true; }
 async function batchSaved(created: Job[]) { editing.value = false; editJob.value = undefined; notify(`已创建 ${created.length} 个任务`); await refresh(); }
 async function saved(job: Job) { editing.value = false; editJob.value = undefined; notify('任务已保存'); await refresh(); if (selectedJob.value?.id === job.id) selectedJob.value = job; }
@@ -263,6 +315,30 @@ async function toggleWatch(job: Job) {
     await refresh();
   } catch (cause) { error.value = errorMessage(cause); }
   finally { busyId.value = ''; }
+}
+/**
+ * Clone an ordinary task server-side.
+ *
+ * The copy is paused, so it opens in the editor instead of being run; jobs and
+ * site links are refreshed first so the new task already exists behind the
+ * dialog. The system task is never offered/cloned, and a failed request leaves
+ * no phantom row because the refresh only happens on success.
+ */
+async function cloneJob(job: Job) {
+  if (busyId.value) return;
+  busyId.value = job.id;
+  try {
+    const created = await write<Job>(`/jobs/${job.id}/clone`, {});
+    notify(`已复制为「${created.name}」，默认暂停`);
+    await refresh();
+    editJob.value = created;
+    initialSourcePath.value = '';
+    editing.value = true;
+  } catch (cause) {
+    error.value = cause instanceof ApiError && cause.code === 'SYSTEM_JOB_CLONE_FORBIDDEN'
+      ? '系统配置任务不能复制。'
+      : errorMessage(cause);
+  } finally { busyId.value = ''; }
 }
 function watchLabel(job: Job) {
   if (job.type !== 'directory' || !job.watch?.enabled) return '';
@@ -372,14 +448,19 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
       <main class="main-content">
         <header class="page-heading"><h1>{{ title }}</h1><div class="heading-actions"><button v-if="['overview','jobs','sites','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'sites'" class="button primary" @click="createSite()"><Plus :size="17" />新增站点</button><button v-else-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
         <div v-if="error" class="notice error" role="alert">{{ error }}<button class="icon-button" title="关闭错误提示" aria-label="关闭错误提示" @click="error = ''"><X :size="16" /></button></div>
-        <div v-if="!loaded && ['overview','jobs','runs'].includes(page)" class="loading-line">正在读取备份数据…</div>
+        <!-- A failed jobs refresh keeps the last good list; this keeps the failure visible above it. -->
+        <div v-if="page === 'jobs' && jobsError && jobs.length && !error" class="notice error" role="alert"><span>{{ jobsError }}</span><button type="button" class="text-button" @click="refresh()"><RefreshCw :size="14" />重新读取</button></div>
+        <div v-if="dataPending" class="loading-line">正在读取备份数据…</div>
         <template v-else-if="page === 'overview'">
-          <section class="stats" aria-label="备份统计"><div class="stat"><div><span>备份任务</span><Folder :size="24" /></div><strong>{{ overview?.totalJobs ?? 0 }}<small>个</small></strong><p>{{ overview?.enabledJobs ?? 0 }} 个已启用</p></div><div class="stat"><div><span>正在执行</span><Activity :size="24" /></div><strong>{{ activeRuns.length }}<small>个</small></strong><p>{{ activeRuns.length ? '备份进行中' : '队列空闲' }}</p></div><div class="stat"><div><span>最近成功</span><CheckCircle2 :size="24" /></div><strong class="date-value">{{ overview?.lastSuccessAt ? shortTime(overview.lastSuccessAt) : '—' }}</strong><p>{{ overview?.lastSuccessAt ? '最近一次成功备份' : '暂无成功记录' }}</p></div><div class="stat"><div><span>临时空间</span><FileArchive :size="24" /></div><strong>{{ bytes(overview?.storage.tempBytes ?? 0) }}</strong><p>{{ overview?.storage.maxTempBytes ? `上限 ${bytes(overview.storage.maxTempBytes)}` : '—' }}</p></div></section>
+          <div v-if="overview && overviewStale" class="notice warning" role="status"><span>概览刷新失败，以下指标与运行环境可能仍是上次成功读取的结果。</span><button type="button" class="text-button" @click="refresh()"><RefreshCw :size="14" />重新读取</button></div>
+          <section class="stats" aria-label="备份统计"><div class="stat"><div><span>备份任务</span><Folder :size="24" /></div><strong>{{ overview ? overview.totalJobs : '—' }}<small v-if="overview">个</small></strong><p>{{ overview ? `${overview.enabledJobs} 个已启用` : overviewPending ? '正在读取概览…' : '概览数据暂时不可用' }}</p></div><div class="stat"><div><span>正在执行</span><Activity :size="24" /></div><strong>{{ overview ? activeRuns.length : '—' }}<small v-if="overview">个</small></strong><p>{{ overview ? (activeRuns.length ? '备份进行中' : '队列空闲') : overviewPending ? '正在读取概览…' : '概览数据暂时不可用' }}</p></div><div class="stat"><div><span>最近成功</span><CheckCircle2 :size="24" /></div><strong class="date-value">{{ overview && overview.lastSuccessAt ? shortTime(overview.lastSuccessAt) : '—' }}</strong><p>{{ overview ? (overview.lastSuccessAt ? '最近一次成功备份' : '暂无成功记录') : overviewPending ? '正在读取概览…' : '概览数据暂时不可用' }}</p></div><div class="stat"><div><span>临时空间</span><FileArchive :size="24" /></div><strong>{{ overview ? bytes(overview.storage.tempBytes) : '—' }}</strong><p>{{ overview ? (overview.storage.maxTempBytes ? `上限 ${bytes(overview.storage.maxTempBytes)}` : '—') : overviewPending ? '正在读取概览…' : '概览数据暂时不可用' }}</p></div></section>
           <section v-if="activeRuns.length" class="panel"><div class="panel-heading"><h2>当前执行</h2><span class="status running"><i />{{ activeRuns.length }} 个任务</span></div><div class="panel-body flush"><button v-for="run in activeRuns" :key="run.id" class="active-run" @click="selectedRun = run.id"><div class="run-symbol"><RefreshCw :size="20" class="spinning" /></div><div><strong>{{ run.jobName }}</strong><span>{{ phaseLabels[run.phase] || run.phase }}<template v-if="liveProgress(run)"> · {{ liveProgress(run) }}</template></span></div><ChevronRight :size="19" /></button></div></section>
-          <div class="content-grid"><section class="panel"><div class="panel-heading"><h2>备份任务 <span class="count">{{ jobs.length }}</span></h2><button class="text-button" @click="navigate('jobs')">全部任务<ArrowRight :size="15" /></button></div><div v-if="!jobs.length" class="empty-state"><div class="empty-symbol"><Folder :size="31" /></div><h3>尚无备份任务</h3><div class="empty-actions"><button class="button secondary" @click="createJob('directory')"><Plus :size="16" />目录备份</button><button class="button secondary" @click="createJob('vaultwarden')"><Database :size="16" />Vaultwarden</button></div></div><div v-else class="overview-job-list"><div v-for="job in jobs.slice(0, 6)" :key="job.id" class="overview-job"><button class="job-primary" @click="openJob(job)"><div class="job-symbol" :class="job.type"><Settings2 v-if="job.type === 'system'" :size="20" /><Database v-else-if="job.type === 'vaultwarden'" :size="20" /><KeyRound v-else-if="job.type === 'newapi'" :size="20" /><Folder v-else :size="20" /></div><div><strong>{{ job.name }}</strong><span class="mono">{{ sourcePath(job) }}</span><span v-if="job.description" :title="job.description">{{ job.description }}</span></div></button><span class="status" :class="job.lastRun?.status ?? (job.enabled ? 'pending' : 'disabled')">{{ job.lastRun ? statusLabels[job.lastRun.status] : job.enabled ? '尚未执行' : '已暂停' }}</span><button class="icon-button" title="立即备份" aria-label="立即备份" :disabled="busyId === job.id || activeJob(job.id) || !canRunJob(job)" @click="runJob(job)"><Play :size="17" /></button></div></div></section><section class="panel"><div class="panel-heading"><h2>运行环境</h2><button class="text-button" @click="navigate('storage')">存储<ArrowRight :size="15" /></button></div><div class="panel-body"><div v-for="tool in tools" :key="tool.key" class="tool-row"><span>{{ tool.label }}</span><span :class="tool.available ? 'text-success' : 'muted'"><Check v-if="tool.available" :size="14" /><CircleAlert v-else :size="14" />{{ tool.available ? '可用' : '未安装' }}</span></div></div></section></div>
-          <section class="panel"><div class="panel-heading"><h2>最近执行</h2><button class="text-button" @click="navigate('runs')">全部记录<ArrowRight :size="15" /></button></div><div v-if="!recentRuns.length" class="empty-state compact"><Clock3 :size="28" /><h3>暂无执行记录</h3></div><div v-else class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>执行时间</th><th>归档大小</th><th>耗时</th><th class="action-column"></th></tr></thead><tbody><tr v-for="run in recentRuns" :key="run.id"><td><button class="table-link" @click="selectedRun = run.id">{{ run.jobName }}</button></td><td><span class="status" :class="run.status"><i />{{ statusLabels[run.status] }}</span></td><td class="nowrap">{{ shortTime(run.createdAt) }}</td><td>{{ bytes(run.archiveBytes) }}</td><td class="nowrap">{{ duration(run) }}</td><td><button class="icon-button" title="查看执行详情" aria-label="查看执行详情" @click="selectedRun = run.id"><ChevronRight :size="17" /></button></td></tr></tbody></table></div></section>
+          <div class="content-grid"><section class="panel"><div class="panel-heading"><h2>站点列表 <span class="count">{{ sites.length }}</span></h2><button class="text-button" @click="navigate('sites')">全部站点<ArrowRight :size="15" /></button></div><div v-if="sitesError" class="panel-body"><div class="notice error" role="alert"><span :title="sitesErrorDetail || undefined">{{ sitesError }}</span><button type="button" class="text-button" @click="loadSites(true)">重新读取</button></div></div><div v-if="!sitesLoaded && !sitesError" class="loading-line">正在读取站点…</div><div v-else-if="sitesLoaded && !sites.length && !sitesError" class="empty-state compact"><div class="empty-symbol"><Globe :size="29" /></div><h3>尚无站点</h3><div class="empty-actions"><button class="button secondary" @click="createSite()"><Plus :size="16" />新增站点</button><button class="button secondary" @click="navigate('jobs')"><Folder :size="16" />全部任务</button></div></div><div v-else-if="sites.length" class="site-list overview-site-list"><SiteRow v-for="site in sites.slice(0, 6)" :key="site.id" :site="site" :jobs="jobs" :jobs-loaded="jobsLoaded" :show-actions="false" :filterable="false" @open-job="openJob" /></div></section><section class="panel"><div class="panel-heading"><h2>运行环境</h2><button class="text-button" @click="navigate('storage')">存储<ArrowRight :size="15" /></button></div><div class="panel-body"><div v-if="!overview && overviewPending" class="muted">正在读取运行环境…</div><div v-else-if="!overview" class="muted">运行环境暂时不可用，稍后会自动重试。</div><div v-for="tool in tools" :key="tool.key" class="tool-row"><span>{{ tool.label }}</span><span :class="tool.available ? 'text-success' : 'muted'"><Check v-if="tool.available" :size="14" /><CircleAlert v-else :size="14" />{{ tool.available ? '可用' : '未安装' }}</span></div></div></section></div>
+          <section class="panel"><div class="panel-heading"><h2>最近执行</h2><button class="text-button" @click="navigate('runs')">全部记录<ArrowRight :size="15" /></button></div><div v-if="!overview && overviewPending" class="empty-state compact"><Clock3 :size="28" /><h3>正在读取最近执行…</h3></div><div v-else-if="!overview" class="empty-state compact"><Clock3 :size="28" /><h3>概览数据暂时不可用</h3></div><div v-else-if="!recentRuns.length" class="empty-state compact"><Clock3 :size="28" /><h3>暂无执行记录</h3></div><div v-else class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>执行时间</th><th>归档大小</th><th>耗时</th><th class="action-column"></th></tr></thead><tbody><tr v-for="run in recentRuns" :key="run.id"><td><button class="table-link" @click="selectedRun = run.id">{{ run.jobName }}</button></td><td><span class="status" :class="run.status"><i />{{ statusLabels[run.status] }}</span></td><td class="nowrap">{{ shortTime(run.createdAt) }}</td><td>{{ bytes(run.archiveBytes) }}</td><td class="nowrap">{{ duration(run) }}</td><td><button class="icon-button" title="查看执行详情" aria-label="查看执行详情" @click="selectedRun = run.id"><ChevronRight :size="17" /></button></td></tr></tbody></table></div></section>
         </template>
-        <JobsView v-else-if="page === 'jobs'" :jobs="jobs" :overview="overview" :busy-id="busyId" :active-job="activeJob" :can-run-job="canRunJob" @create="createJob()" @open="openJob" @run="runJob" @edit="edit" @remove="deleting = $event" @toggle="toggleJob" @toggle-watch="toggleWatch" />
+        <JobsView v-else-if="page === 'jobs' && (jobsLoaded || jobs.length)" :jobs="jobs" :overview="overview" :busy-id="busyId" :active-job="activeJob" :can-run-job="canRunJob" @create="createJob()" @open="openJob" @run="runJob" @edit="edit" @remove="deleting = $event" @toggle="toggleJob" @toggle-watch="toggleWatch" @clone="cloneJob" />
+        <!-- A jobs read that never succeeded must not render as an empty task list. -->
+        <section v-else-if="page === 'jobs'" class="panel"><div class="panel-body"><div class="notice error" role="alert"><span>任务列表尚未成功加载，无法显示任务。</span><button type="button" class="text-button" @click="refresh()"><RefreshCw :size="14" />重新读取</button></div></div></section>
         <SitesView v-else-if="page === 'sites'" :sites="sites" :jobs="jobs" :loaded="sitesLoaded" :jobs-loaded="jobsLoaded" :loading="sitesLoading" :error="sitesError" :error-detail="sitesErrorDetail" :busy-id="siteBusyId" @create="createSite()" @edit="editSite" @remove="deletingSite = $event" @open-job="openJob" @reload="loadSites(true)" />
         <template v-else-if="page === 'runs'">
           <section class="panel runs-panel"><div class="panel-heading runs-toolbar"><div class="filter-group"><select v-model="runFilter" aria-label="按任务筛选"><option value="">全部任务</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.name }}</option></select><select v-model="runStatusFilter" aria-label="按状态筛选"><option value="">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">执行中</option><option value="queued">排队中</option><option value="cancelled">已取消</option><option value="interrupted">已中断</option></select></div><span class="muted record-count">{{ runsTotal }} 条记录</span></div>
@@ -390,7 +471,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
           <div v-if="runsTotal > 30" class="pagination"><button class="button secondary small" :disabled="runsPage === 0" @click="runsPage--">上一页</button><span>{{ runsPage + 1 }} / {{ Math.ceil(runsTotal / 30) }}</span><button class="button secondary small" :disabled="(runsPage + 1) * 30 >= runsTotal" @click="runsPage++">下一页</button></div>
           </section>
         </template>
-        <FileManagerView v-else-if="page === 'files'" @create-job="source => createJob('directory', source)" />
+        <FileManagerView v-else-if="page === 'files'" @create-job="(path, kind) => createJob(kind, path)" />
         <StorageView v-else-if="page === 'storage'" @message="notify" />
         <SettingsView v-else-if="page === 'settings'" @message="notify" @saved="settingsSaved" />
       </main>
@@ -405,7 +486,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
       <template v-if="jobDetailTab === 'summary'"><div class="property-grid"><div><span>类型</span><strong>{{ typeLabel(selectedJob.type) }}</strong></div><div><span>状态</span><strong>{{ selectedJob.enabled ? '已启用' : '已暂停' }}</strong></div><div v-if="selectedJob.description" class="full"><span>描述</span><strong>{{ selectedJob.description }}</strong></div><div v-if="selectedJob.tags?.length" class="full"><span>标签</span><strong>{{ selectedJob.tags.join('、') }}</strong></div><div class="full"><span>关联站点</span><div v-if="selectedJobSites.length" class="site-links"><button v-for="site in selectedJobSites" :key="site.id" type="button" class="tag-chip" :title="`编辑站点 ${site.name}`" @click="openSite(site)">{{ site.name }}</button></div><strong v-else class="muted">未关联站点</strong></div><div class="full"><span>{{ selectedJob.type === 'system' ? '来源' : '源目录' }}</span><strong class="mono">{{ sourcePath(selectedJob) }}</strong></div><div><span>压缩格式</span><strong>{{ selectedJob.archive.format }}{{ selectedJob.archive.encrypted ? ' · AES-256' : '' }}</strong></div><div><span>保留策略</span><strong>{{ selectedJob.retention.days }} 天 · 至少 {{ selectedJob.retention.keepLast }} 份</strong></div><div v-if="selectedJob.type === 'directory'"><span>文件监听</span><strong>{{ !selectedJob.watch?.enabled ? '未启用' : !selectedJob.enabled ? '任务已暂停' : overview?.watchStatus?.[selectedJob.id]?.state === 'error' ? '监听错误' : !overview?.watchStatus?.[selectedJob.id] ? '状态待确认' : overview.watchStatus[selectedJob.id]?.capturing ? '正在建立基线' : overview.watchStatus[selectedJob.id]?.pending ? '等待备份' : '监听中' }}{{ selectedJob.watch?.enabled ? (selectedJob.watch.mode === 'incremental' ? ' · 仅变化文件' : ' · 整个目录') : '' }}</strong></div><div v-if="selectedJob.watch?.enabled && overview?.watchStatus?.[selectedJob.id]?.error" class="full"><span>监听错误</span><strong>{{ overview.watchStatus[selectedJob.id]?.error }}</strong></div><div><span>执行计划</span><strong class="mono">{{ selectedJob.schedule.enabled ? selectedJob.schedule.cron : '手动执行' }}</strong></div><div><span>下次执行</span><strong>{{ dateTime(selectedJob.nextRunAt) }}</strong></div><div v-if="selectedJob.type === 'vaultwarden'"><span>数据库</span><strong>{{ selectedJob.vaultwarden.dbType }}</strong></div></div><h3 class="form-heading separated">同步目标</h3><div v-for="(destination, index) in selectedJob.destinations" :key="index" class="target-row"><HardDrive :size="17" /><strong class="mono">{{ destination.remote }}:{{ destination.path }}</strong></div><span v-if="!selectedJob.destinations.length" class="muted">未配置</span><h3 class="form-heading separated">最近执行</h3><button v-if="selectedJob.lastRun" class="last-run-button" @click="selectedRun = selectedJob.lastRun.id"><span class="status" :class="selectedJob.lastRun.status">{{ statusLabels[selectedJob.lastRun.status] }}</span><span>{{ dateTime(selectedJob.lastRun.createdAt) }}</span><ChevronRight :size="17" /></button><span v-else class="muted">尚未执行</span></template>
       <template v-else><div v-if="archiveError" class="notice error">{{ archiveError }}</div><div v-if="archivesLoading" class="loading-line">正在读取备份版本…</div><div v-else-if="!archives.length" class="empty-state compact"><ArchiveIcon :size="29" /><h3>暂无备份版本</h3></div><div v-else class="archive-list"><article v-for="archive in archives" :key="archive.runId ?? archive.id" class="archive-row"><FileArchive :size="21" /><div class="archive-meta"><strong>{{ archive.archiveName ?? archive.name }}</strong><span>{{ dateTime(archive.createdAt ?? archive.finishedAt) }} · {{ bytes(archive.archiveBytes ?? archive.size) }}</span><span v-if="archive.sha256" class="mono checksum">SHA-256 {{ archive.sha256 }}</span><div class="archive-targets"><a v-for="(target, index) in availableTargets(archive)" :key="index" class="button secondary small" :href="`/api/jobs/${selectedJob.id}/archives/${archive.runId ?? archive.id}/download?destinationId=${encodeURIComponent(target.destinationId ?? '')}`"><Download :size="14" />{{ selectedJob.type === 'system' ? `导出 · ${target.remote}` : target.remote }}</a><span v-if="!availableTargets(archive).length" class="muted">远端版本已清理</span></div></div></article></div></template>
     </div>
-    <footer class="modal-footer"><button v-if="selectedJob.type === 'system'" class="button secondary" @click="openSystemImport"><ArchiveIcon :size="16" />导入配置</button><button class="button secondary" @click="edit(selectedJob)"><Pencil :size="16" />编辑任务</button><button class="button primary" :disabled="busyId === selectedJob.id || activeJob(selectedJob.id) || !canRunJob(selectedJob)" @click="runJob(selectedJob)"><Play :size="16" />立即备份</button></footer>
+    <footer class="modal-footer"><button v-if="selectedJob.type === 'system'" class="button secondary" @click="openSystemImport"><ArchiveIcon :size="16" />导入配置</button><button v-if="selectedJob.type !== 'system'" class="button secondary" :disabled="busyId === selectedJob.id" @click="cloneJob(selectedJob)"><Copy :size="16" />复制任务</button><button class="button secondary" @click="edit(selectedJob)"><Pencil :size="16" />编辑任务</button><button class="button primary" :disabled="busyId === selectedJob.id || activeJob(selectedJob.id) || !canRunJob(selectedJob)" @click="runJob(selectedJob)"><Play :size="16" />立即备份</button></footer>
   </Modal>
   <Modal v-if="systemImportOpen" title="导入系统配置" @close="systemImportOpen = false">
     <form @submit.prevent="importSystemConfiguration">

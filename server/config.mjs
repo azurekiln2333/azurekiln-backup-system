@@ -53,7 +53,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   return config;
 }
 
-export function resolveSourcePath(config, input, { allowMissing = false, directory = false } = {}) {
+export function resolveSourcePath(config, input, { allowMissing = false, directory = false, file = false } = {}) {
   if (typeof input !== 'string' || !input || input.includes('\0') || !path.isAbsolute(input)) throw new AppError('Select an absolute source path inside an allowed root.', 400, 'SOURCE_PATH_INVALID');
   const absolute = path.resolve(input);
   const root = config.sourceRoots.find((item) => isWithin(item, absolute));
@@ -76,5 +76,7 @@ export function resolveSourcePath(config, input, { allowMissing = false, directo
   const real = realpathSync(absolute);
   if (!isWithin(root, real)) throw new AppError('Source path escapes its allowed root.', 403, 'SOURCE_PATH_FORBIDDEN');
   if (directory && !lstatSync(real).isDirectory()) throw new AppError('Select a directory.', 400, 'SOURCE_NOT_DIRECTORY');
+  // File tasks must point at one regular file; directories, symlinks and special files are rejected.
+  if (file && !lstatSync(real).isFile()) throw new AppError('Select a regular file.', 400, 'SOURCE_NOT_FILE');
   return real;
 }

@@ -1,0 +1,94 @@
+# Independent acceptance review
+
+Reviewer: native agent `layout_status`, taking over the unavailable p7 review.
+Date: 2026-10-25.
+
+## Current conclusion
+
+**Full AC1–AC8 acceptance: PASS. No open blocking finding remains in the reviewed source or final acceptance evidence.**
+
+This review is independent of the implementers. Product files are read-only to this reviewer; only this report is writable. No build, test suite, browser/layout runner or real backup tool was started by the reviewer because the parent owns sequential verification.
+
+## Backend and test-source review
+
+- `shared/contracts.mjs`: ordered repository metadata has canonical first-occurrence deduplication and legacy defaults. Exact allowlisted provider hosts, HTTP(S), credential/port/whitespace/backslash checks and owner/repository path requirements prevent deceptive provider detection. Repository path case, deep paths, `.git`, query and fragment survive normalization. Notes are trimmed plain text with the approved limit; site hostname projection leaves full address storage/navigation independent.
+- `server/store.mjs:125`: site projection and saved JSON both carry `repositoryUrls` and `notes`, defaulting old rows to `[]` and `''`. Existing site merge/transaction behavior retains omitted metadata, arrays and many-to-many relations. The new clone relation lookup queries sites by `job_id`; all source-site links are inserted transactionally, and a full site's 200-job cap or insertion failure rolls back the entire clone. Site metadata/timestamps are not rewritten.
+- `server/store.mjs:190`, `server/app.mjs:170`: cloning reads private source configuration, retains sealed archive/database credentials and config, creates fresh identity/timestamps and a paused copy, and leaves source history/runtime timestamps/baseline intact. Public output is sanitized. Strict clone-body validation, auth/origin/CSRF boundaries and system-job rejection remain in the established middleware path. Clone does not enqueue work or refresh scheduler/watchers. The default-name truncation respects UTF-16 length without splitting a surrogate pair.
+- `server/config.mjs:56`, `server/app.mjs:46`, `server/backup.mjs:243`: file jobs pass allowed-root, component/target symlink, state overlap, existence and regular-file checks at save/execution. Paused/clone missing-path behavior remains the existing explicit exception; present wrong types still fail. Single-file tar construction uses parent `-C` plus `./basename`, selecting one option-safe basename without siblings. Empty files are valid. File jobs reuse existing archive/encryption/verification/upload/retention/cleanup; directory watcher/incremental/excludes remain directory behavior.
+- `tests/sites.test.mjs:288` onward: repository/notes validation, persistence, exact ordering/href, independent clear/omission, atomic invalid writes, old-row defaults and current/legacy snapshot restore are covered. The real system export test executes encrypted backup, production download, staged import and restore, then compares the entire saved site object and foreign keys, including full addresses, repositories, notes and associations.
+- `tests/file-clone.test.mjs:104` onward: regular/zero-byte and invalid source boundaries, source changes before execution, private/public credential handling, live-source independence, clone history/baseline/runtime isolation, all site relations, cap rollback and an actual failing SQLite relation trigger are covered. Real-tool round trip asserts selected Unicode/space/leading-dash basename, bytes/hash, zero-byte source, exactly one archive member, sibling exclusion, wrong-password rejection, metadata and staging cleanup.
+
+## Verification evidence received
+
+- Parent reported the initial sequential `RUN_BACKUP_INTEGRATION=1` suite: **108 tests; 105 pass; 1 fail; 2 skip**. Reviewer inspected `.artifacts/logs/site-console-tests.log` and confirmed this result. Windows symlink/socket cases are the skips.
+- The one failure was the real-file test comparing platform `tar -tf` stdout decoded as UTF-8 against a Unicode filename; Windows emitted another text encoding. Current test source retains the one-member tar assertion and relies on the extracted filesystem's exact filename plus byte/hash assertions. This is an assertion portability fix, with no product/backend change.
+- Parent reported the corrected real-file round trip rerun **1 pass, 0 fail, 8.16 s**. The complete original suite log still records its historical failure; this report does not call that historical run fully green.
+- A subsequent full rerun also failed (`spawn UNKNOWN` and a site test HTTP 401), after which the parent/helper investigated host OOM/process-start and harness behavior. This is historical failure evidence, superseded by the controlled final run below.
+
+**Controlling final backend result (supersedes the historical failures above):** parent completed the controlled serial real-tool/integration suite with exit 0. Reviewer inspected `.artifacts/logs/site-console-tests-serial.log`: **108 tests, 106 pass, 0 fail, 2 skip**. The real encrypted single-file exact-name/bytes/zero-byte/sibling-exclusion round trip passed, all clone isolation/secret/transaction tests passed, and current/legacy snapshot plus actual encrypted system export/download/staged restore passed. The two skips are the Windows special-socket test and the existing new-api symbolic-link data-directory test. The drive-root `dirname` assertions now use `String.raw` for unambiguous Windows paths and passed in this complete run.
+
+This closes the backend portions of AC1/AC5/AC7/AC8. Their UI portions and AC2–AC4/AC6 are closed by the final browser/layout evidence below. Parent has confirmed all product files frozen.
+
+## Frontend findings reported before final freeze
+
+The parent accepted the following findings and routed fixes to the sole frontend owner p8 / test owner p6. All are resolved by the narrow source recheck and final passing evidence recorded below:
+
+1. **AC7 — file preselection reappears after refresh.** `PathPicker.vue` clears `selectedFile` in `load()` but then reselects `props.initialFile` on every successful listing, rather than only the initial successful read. Refresh in the same directory re-enables confirmation; returning to the original directory also silently selects the old file. This contradicts the existing browser assertions and the intended one-time initialization. Use a one-time preselection guard.
+2. **AC7 — Windows drive-root file cannot open its parent.** `JobEditor.vue` uses `jobGroups.dirname()` for a file's picker path, but `dirname('D:\\report.pdf')` returns `D:`. With a configured `D:\\` root, Browse sends that drive-relative path to `/sources`, where absolute-path validation rejects it. Preserve the drive-root separator in the parent-directory calculation.
+3. **AC1 — accepted repository links can share an accessible name.** `SiteRow.vue:109` uses only provider plus pathname label. Accepted `https://gitcode.com/a/b` and `https://hub.gitcode.com/a/b`, or same-path URLs with different query/fragment, therefore have identical accessible names despite distinct targets. Include the complete canonical href in the accessible name.
+4. **AC2 — secondary labels are clipped instead of naturally growing.** `.site-job-name` sets 18ch maximum width (12ch mobile), nowrap and hidden/ellipsis overflow; `.site-repo-label` similarly clips at 22ch. This hides long associated task/repository names, contrary to the approved natural-growth exception. Allow secondary names to wrap; the explicitly approved identity ellipsis and one-line notes preview are separate cases.
+5. **Interaction — overview tag buttons have no handler.** Overview renders `SiteRow` without `filter-tag`; the tags still render buttons that emit an unhandled event. Render read-only tags or wire a meaningful action.
+6. **AC6 — obsolete browser selector.** `scripts/check-browser.mjs:860` still reads `.site-meta`, which the shared `SiteRow` no longer renders. Assert the saved link count through the new pending relation presentation instead.
+7. **AC4 — failed initial jobs read can invent an idle queue.** `activeRuns` derives only from `jobs`, but the overview's activity statistic checks only whether `overview` exists. If initial `/jobs` fails and `/overview` succeeds with a running job in its own `jobs` payload, the UI displays `0` and `队列空闲` from the empty failed task list. Derive the summary from available authoritative data or show unavailable rather than an invented idle state.
+8. **Independent jobs error state — failed first read also renders an empty-success page.** On `#jobs`, an initial `/jobs` failure makes `dataPending` false through the global error, then unconditionally renders `JobsView` with `[]`, displaying `尚无备份任务` below the read error. Distinguish failed/unloaded jobs from a successfully empty list; preserve an existing last-good list if one exists.
+9. **AC4 — overview site preview hides refresh failures after its first success.** Its error/retry branch requires `!sitesLoaded && sitesError`, while `loadSites()` leaves `sitesLoaded` true after a later failure. Consequently the preview silently shows old site data, or continues a prior empty-success `尚无站点` state, with no error/retry. Preserve the last-good data with an explicit read-failure/stale indication and retry; do not silently treat the failed current read as a fresh empty success.
+10. **AC4 — failed silent overview refresh has no unavailable/stale state.** `refresh(true)` retains the prior `overview` object and records no resource-specific failure flag. Its statistics/environment therefore continue to appear current after a failed summary read. The approved design requires operational summaries to show unavailable/stale state; keep prior values if useful but make the failed refresh explicit.
+
+The scoped file/clone UI subreview found no other new issue in source-picker navigation, file source save/run wiring, directory-only watcher/exclusions, clone paused-editor opening, preserved password flags, duplicate-submit guard, failed-request local state or system-job action suppression. This was static inspection only.
+
+The remaining full-scope static scan is complete. No additional blocker was found in metadata editing/search/literal text/full address retention, local SVG imports and theme selection, shared row data flow, task type coverage or the three README semantics. The completed review rechecked the listed fixes and final acceptance evidence without widening the task.
+
+## Narrow recheck of accepted fixes
+
+All ten findings above are **resolved in the source read by the reviewer**:
+
+- `PathPicker` uses a one-time `preselectPending` flag and clears selection on subsequent directory reads. `initialPath` and `initialFile` are separate. Shared `dirname()` retains both slash forms of a Windows drive root and `/` for a POSIX root; focused regression assertions were added to `tests/job-groups.test.mjs`.
+- Repository accessible names now include the exact canonical href, and repository/task secondary labels use natural wrapping without their previous maximum-width/nowrap/hidden overflow. Overview passes `filterable=false`, rendering plain tag spans.
+- Active runs derive from the authoritative overview job projection, so an independent failed first `/jobs` request does not fabricate an idle activity count. `JobsView` is gated on a successful jobs read; the alternate branch displays an explicit task-read failure/retry instead of an empty-success list.
+- Overview site-read errors now display independently of `sitesLoaded`, retaining last-good rows when present and suppressing empty-success state on failure. Failed overview refresh sets `overviewStale`, with visible last-success warning and retry.
+- The obsolete `.site-meta` browser assertion now uses the pending relation label and asserts the saved count remains one.
+
+The previous AC7/AC8 browser evidence gaps are **closed in test source and the final passing browser run**: the flow saves the selected file, manually runs it through the UI and downloads a nonempty 7z archive; saves the paused clone with an empty password field while retaining configured encryption; and injects a failed clone POST while asserting unchanged API job count, rendered row count and no phantom editor.
+
+Parent obtained the complete serial real-tool suite (`--test-concurrency=1`, constrained Go scheduler) after host OOM/process-start failures in the earlier rerun. No runtime probe was run by this reviewer. The small browser artifact counter issue is also fixed in source: `verification.json` now derives its backup total from `completedBackups` rather than a stale hardcoded three.
+
+## Final acceptance evidence
+
+- **Type/build: PASS.** Reviewer read `.artifacts/logs/site-console-typecheck.log` (`vue-tsc --noEmit`, no errors) and `.artifacts/logs/site-console-build.log` (Vite built successfully, 1616 modules). Parent repeated both after the final editor-help fix and reported exit 0; `node --check` also passed.
+- **Browser lifecycle: PASS.** Parent explicitly confirmed the latest complete browser process (session 60417) returned `exit_code 0`. Reviewer read `.artifacts/logs/site-console-browser.log` and `.artifacts/screenshots/verification.json`: **64 screenshots, 4 real encrypted backups, 5 mail messages, no browser errors**, checked at `2026-10-24T20:15:46.119Z` (2026-10-25 local). This run includes the actual saved/manual file backup and download, clone secret-preserving save, failed-clone isolation, site metadata/search/drafts/relations, and independent pending/error/retry flows.
+- **Responsive matrix: PASS.** Reviewer read `.artifacts/logs/site-console-layout.log`; final-quality owner confirmed final layout session 30871 returned exit 0: **7 pages × 4 viewports × 2 themes = 56 asserted page renders, 60 screenshots**. Overview checks passed in all 8 combinations with **48/48 visible site names**. Site density/visibility checks include deliberate-defect negative controls, then pass after production restoration. The owner confirmed the final run executed both expected failures and post-restoration visibility/density assertions.
+- **Density: PASS.** Final `.artifacts/layout/density-metrics.json` was captured at `2026-10-24T20:08:44.569Z`, after `.tag-chip` styling was restored. In both themes, 1440×900 has **8 complete standard rows, maximum 77px**; 768×1024 has **8, maximum 97px**; 390×844 and 360×780 each have **3, maximum 146px**. These satisfy desktop ≥6/≤104px and phones ≥3/≤156px. The same eight original names/addresses/tags/jobs are used; final rows additionally have two repositories and a short note, which the pre-feature UI could not render. No claim of identical full baseline content is made.
+- **Radius audit: PASS.** Reviewer read `.artifacts/logs/site-console-radius.log`: `node scripts/ui-radius-audit.mjs`, exit code 0, every `border-radius` uses the `--radius-*` scale. The reviewer did not rerun it.
+
+### Final screenshot review and last correction
+
+The reviewer inspected browser screenshots for sites (desktop/360), successful manual file run/download, cloned directory editor, held-pending overview, initial jobs failure, site metadata editor and 360px job editor. The final layout screenshots inspected cover **all seven pages**: sites (light/dark desktop and mobile), overview (light desktop/dark mobile), jobs (light desktop/dark mobile), files (light desktop/dark mobile), runs (light desktop/dark mobile), storage (light desktop/dark mobile), and settings (light desktop/dark mobile).
+
+The rendered evidence shows readable compact rows; title/first hostname on one line; transparent address links distinct from filled tag chips; visible repository/job names and natural secondary wrapping; retained overview operational panels; and usable mobile editors. Wide tables remain contained scroll areas on phones. No additional concrete visual defect was found.
+
+One final screenshot finding was accepted and corrected: ordinary directory/file editors displayed system-only backup-content help because a `v-else` covered ordinary types. `JobEditor.vue` now uses `v-else-if="form.type === 'system'"`, and the browser suite explicitly asserts that this help is absent from both file and cloned-directory editors. Reviewer checked the condition and both assertions, then inspected the refreshed `desktop-job-clone.png` from the final passing run: the incorrect help is absent and the paused clone editor remains usable. This conditional editor-only fix does not invalidate the final main-page density metrics.
+
+### Acceptance closure
+
+| Criterion | Result | Controlling evidence |
+| --- | --- | --- |
+| AC1 — repository/remarks contract, accessible navigation, search and failed-save drafts | PASS | Shared/store/API source review; serial metadata tests; final browser CRUD/search/draft/relation checks; distinct canonical-href accessible labels. |
+| AC2 — compact standard rows and seven-page consistency | PASS | Final density metrics (desktop 8/77px, phones 3/146px), all-seven-page matrix and screenshot inspection; secondary labels wrap naturally. |
+| AC3 — shared title/hostname row, exact full href and distinct tags | PASS | Shared `SiteRow` source, browser href/hostname assertions, final light/dark desktop/mobile screenshots and restored tag-chip styling. |
+| AC4 — site overview with retained operations and honest independent resource states | PASS | Final browser populated/empty/unlinked/stale/error/retry/pending flows, overview name visibility assertions and source recheck of authoritative activity/jobs errors. |
+| AC5 — existing metadata/relations and backup compatibility | PASS | Serial current/legacy snapshot plus real encrypted export/download/staged import/restore tests; final browser edit/reload/association flows. |
+| AC6 — required checks, real lifecycle, matrix, guards and independent review | PASS | Final type/build, 108-test serial suite, 64-screenshot real browser, 56-render layout matrix, deliberate-defect controls, radius audit and this review. |
+| AC7 — single-file boundary, exact encrypted round trip and browser execution | PASS | Serial file-source boundary and exact filename/bytes/zero-byte/sibling-exclusion tests; final browser picker/save/manual run/nonempty download. |
+| AC8 — isolated paused clone, secrets, relations and failure behavior | PASS | Serial clone identity/secrets/source/history/baseline/transaction/auth/CSRF tests; final browser preserved-secret save, failed-request row isolation and no system clone action. |
+
+The two documented platform skips remain: Windows special socket and the existing new-api symbolic-link data-directory test. No production deployment was performed or required for acceptance. This reviewer edited only this report and did not start runtime checks, services or backup tools; the parent owns those executions and Git actions.

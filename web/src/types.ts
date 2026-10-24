@@ -48,7 +48,7 @@ export interface Run {
   id: string;
   jobId: string;
   jobName: string;
-  type: 'directory' | 'vaultwarden' | 'system' | 'newapi';
+  type: 'directory' | 'file' | 'vaultwarden' | 'system' | 'newapi';
   status: RunStatus;
   phase: string;
   trigger: string;

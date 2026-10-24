@@ -94,11 +94,81 @@ export function siteDomainLink(value) {
   return { href, label: siteDomainLabel(href) };
 }
 
+// Hostname-only label for the compact site identity row (no scheme, port, path, query or fragment).
+// Kept separate from siteDomainLink/siteDomainLabel so editors keep showing the full address preview.
+/** @param {string} value @returns {string} */
+export function siteDomainHostname(value) {
+  return new URL(normalizeSiteDomain(value)).hostname;
+}
+
 export const siteDomainSchema = z.string().trim().min(1).max(SITE_DOMAIN_MAX_LENGTH, `地址最多 ${SITE_DOMAIN_MAX_LENGTH} 个字符。`)
   .transform((value, ctx) => {
     try { return normalizeSiteDomain(value); }
     catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message }); return z.NEVER; }
   });
+
+// Repository navigation metadata: browser links on recognized providers, never cloned, probed or fetched.
+export const SITE_REPOSITORY_LIMIT = 20;
+export const SITE_REPOSITORY_MAX_LENGTH = 2048;
+export const SITE_NOTES_MAX_LENGTH = 500;
+export const SITE_REPOSITORY_HOSTS = Object.freeze({
+  'github.com': 'github',
+  'cnb.cool': 'cnb',
+  'gitee.com': 'gitee',
+  'gitcode.com': 'gitcode',
+  'hub.gitcode.com': 'gitcode',
+});
+const SITE_REPOSITORY_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+// Prototype-safe exact-host lookup: a frozen literal object would otherwise answer for keys such as `__proto__`.
+const repositoryProviderForHost = (hostname) => (Object.hasOwn(SITE_REPOSITORY_HOSTS, hostname) ? SITE_REPOSITORY_HOSTS[hostname] : null);
+
+// Canonical repository URL boundary. Bare provider addresses default to HTTPS; an explicitly supplied http:// is
+// preserved as submitted. Only exact recognized hosts are accepted; the target keeps its case-sensitive
+// path/query/fragment and .git suffix, and no path cutting or alias rewriting happens here.
+/** @param {string} input @returns {string} */
+export function normalizeSiteRepository(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) throw new Error('仓库地址不能为空。');
+  if (/[\0-\x1f\x7f \\]/.test(raw)) throw new Error('仓库地址不能包含空格、反斜杠或控制字符。');
+  const candidate = SITE_REPOSITORY_SCHEME.test(raw) ? raw : raw.startsWith('//') ? `https:${raw}` : `https://${raw}`;
+  if (candidate.slice(candidate.indexOf('://') + 3).startsWith('/')) throw new Error('仓库地址必须是受支持平台的仓库 URL。');
+  let url;
+  try { url = new URL(candidate); } catch { throw new Error('仓库地址必须是受支持平台的仓库 URL。'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('仓库地址只支持 http:// 或 https://。');
+  if (url.username || url.password) throw new Error('仓库地址不能包含用户名或密码。');
+  if (!repositoryProviderForHost(url.hostname)) throw new Error(`仓库地址的主机不受支持，仅支持 ${Object.keys(SITE_REPOSITORY_HOSTS).join('、')}。`);
+  // The URL parser already removed default ports, so any remaining port is nondefault and rejected.
+  if (url.port) throw new Error('仓库地址不能使用非默认端口。');
+  // Require owner/group plus repository path; nested/deep paths stay allowed and are never cut.
+  if (url.pathname.split('/').filter((segment) => segment !== '').length < 2) throw new Error('仓库地址必须包含所有者/组织与仓库路径。');
+  const href = url.href;
+  if (href.length > SITE_REPOSITORY_MAX_LENGTH) throw new Error(`仓库地址最多 ${SITE_REPOSITORY_MAX_LENGTH} 个字符。`);
+  return href;
+}
+
+/** @param {string} value @returns {'github'|'cnb'|'gitee'|'gitcode'|null} */
+export function siteRepositoryProvider(value) {
+  try { return repositoryProviderForHost(new URL(normalizeSiteRepository(value)).hostname); }
+  catch { return null; }
+}
+
+// Safe repository projection: canonical href, derived provider and a distinguishable owner/repository path label.
+// Throws on invalid input so presentation boundaries render a readable nonlink instead of an unsafe href.
+/** @param {string} value @returns {{ href: string, provider: 'github'|'cnb'|'gitee'|'gitcode', label: string }} */
+export function siteRepositoryLink(value) {
+  const href = normalizeSiteRepository(value);
+  const url = new URL(href);
+  return { href, provider: repositoryProviderForHost(url.hostname), label: url.pathname.replace(/^\/+|\/+$/g, '') };
+}
+
+export const siteRepositorySchema = z.string().trim().min(1).max(SITE_REPOSITORY_MAX_LENGTH, `仓库地址最多 ${SITE_REPOSITORY_MAX_LENGTH} 个字符。`)
+  .transform((value, ctx) => {
+    try { return normalizeSiteRepository(value); }
+    catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message }); return z.NEVER; }
+  });
+
+// Optional plain-text remarks; internal newlines survive, ends are trimmed and '' is the empty value.
+export const siteNotesSchema = z.string().trim().max(SITE_NOTES_MAX_LENGTH).default('');
 
 /** @param {string[]} items @returns {string[]} */
 const dedupeStrings = (items) => items.filter((item, index) => items.indexOf(item) === index);
@@ -107,6 +177,8 @@ export const siteSchema = z.object({
   name: z.string().trim().min(1).max(100),
   domains: z.array(siteDomainSchema).max(SITE_DOMAIN_LIMIT).default([]).transform(dedupeStrings),
   tags: tagListSchema,
+  repositoryUrls: z.array(siteRepositorySchema).max(SITE_REPOSITORY_LIMIT).default([]).transform(dedupeStrings),
+  notes: siteNotesSchema,
   backupJobIds: z.array(z.string().trim().min(1).max(100)).max(SITE_BACKUP_JOB_LIMIT).default([]).transform(dedupeStrings),
 });
 
@@ -114,7 +186,7 @@ export const jobSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).default(''),
   tags: tagListSchema,
-  type: z.enum(['directory', 'vaultwarden', 'system', 'newapi']).default('directory'),
+  type: z.enum(['directory', 'file', 'vaultwarden', 'system', 'newapi']).default('directory'),
   enabled: z.boolean().default(true),
   sourcePath: z.string().trim().default(''),
   destinations: z.array(destinationSchema).max(10).default([]),

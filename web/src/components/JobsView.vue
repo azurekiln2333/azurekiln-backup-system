@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import {
-  ChevronDown, ChevronRight, Database, Folder, HardDrive, Pencil, Play, Plus, Search, Settings2, Trash2,
+  ChevronDown, ChevronRight, Copy, Database, FileText, Folder, HardDrive, Pencil, Play, Plus, Search, Settings2, Trash2,
 } from 'lucide-vue-next';
 import { shortTime, statusLabels } from '../format';
 import type { Job, Overview } from '../types';
@@ -25,6 +25,7 @@ const emit = defineEmits<{
   remove: [job: Job];
   toggle: [job: Job];
   toggleWatch: [job: Job];
+  clone: [job: Job];
 }>();
 
 /** Browser storage is absent while server-rendering; every helper tolerates undefined. */
@@ -125,7 +126,7 @@ function watchLabel(job: Job) {
           <template v-if="!isCollapsed(group.key)">
             <tr v-for="job in group.jobs" :key="job.id">
               <td>
-                <button class="job-primary" @click="emit('open', job)"><div class="job-symbol" :class="job.type"><Settings2 v-if="job.type === 'system'" :size="20" /><Database v-else-if="job.type === 'vaultwarden'" :size="20" /><Folder v-else :size="20" /></div><div><strong>{{ job.name }}</strong><span class="mono">{{ sourcePath(job) }}</span><span v-if="job.description" :title="job.description">{{ job.description }}</span></div></button>
+                <button class="job-primary" @click="emit('open', job)"><div class="job-symbol" :class="job.type"><Settings2 v-if="job.type === 'system'" :size="20" /><Database v-else-if="job.type === 'vaultwarden'" :size="20" /><FileText v-else-if="job.type === 'file'" :size="20" /><Folder v-else :size="20" /></div><div><strong>{{ job.name }}</strong><span class="mono">{{ sourcePath(job) }}</span><span v-if="job.description" :title="job.description">{{ job.description }}</span></div></button>
                 <div v-if="job.tags?.length" class="tag-list"><button v-for="tag in job.tags" :key="tag" type="button" class="tag-chip" :class="{ active: tagFilter === tag }" :title="tagFilter === tag ? '取消标签筛选' : `只看标签 ${tag}`" @click="tagFilter = tagFilter === tag ? '' : tag">{{ tag }}</button></div>
               </td>
               <td><div class="target-label" v-for="(destination, index) in job.destinations" :key="index"><HardDrive :size="13" /><span class="mono">{{ destination.remote }}:{{ destination.path }}</span></div><span v-if="!job.destinations.length" class="muted">未配置</span></td>
@@ -133,7 +134,7 @@ function watchLabel(job: Job) {
               <td class="nowrap">{{ job.schedule.enabled ? shortTime(job.nextRunAt) : '手动执行' }}</td>
               <td><input class="switch" type="checkbox" :checked="job.enabled" :disabled="busyId === job.id || (job.type === 'system' && !canRunJob(job))" :aria-label="`启用 ${job.name}`" @change="emit('toggle', job)" /></td>
               <td class="nowrap"><template v-if="job.type === 'directory'"><input class="switch" type="checkbox" :checked="job.watch?.enabled ?? false" :disabled="busyId === job.id" :aria-label="`文件监听 ${job.name}`" @change="emit('toggleWatch', job)" /><small v-if="watchLabel(job)" class="table-secondary" :class="{ 'text-danger': overview?.watchStatus?.[job.id]?.state === 'error' }" :title="overview?.watchStatus?.[job.id]?.error ?? undefined">{{ watchLabel(job) }}</small></template><span v-else class="muted">—</span></td>
-              <td><div class="row-actions"><button class="icon-button" title="立即备份" aria-label="立即备份" :disabled="busyId === job.id || activeJob(job.id) || !canRunJob(job)" @click="emit('run', job)"><Play :size="17" /></button><button class="icon-button" title="编辑任务" aria-label="编辑任务" @click="emit('edit', job)"><Pencil :size="16" /></button><button v-if="job.type !== 'system'" class="icon-button danger" title="删除任务" aria-label="删除任务" :disabled="activeJob(job.id)" @click="emit('remove', job)"><Trash2 :size="16" /></button></div></td>
+              <td><div class="row-actions"><button class="icon-button" title="立即备份" aria-label="立即备份" :disabled="busyId === job.id || activeJob(job.id) || !canRunJob(job)" @click="emit('run', job)"><Play :size="17" /></button><button class="icon-button" title="编辑任务" aria-label="编辑任务" @click="emit('edit', job)"><Pencil :size="16" /></button><button v-if="job.type !== 'system'" class="icon-button" title="复制任务" :aria-label="`复制任务 ${job.name}`" :disabled="busyId === job.id" @click="emit('clone', job)"><Copy :size="16" /></button><button v-if="job.type !== 'system'" class="icon-button danger" title="删除任务" aria-label="删除任务" :disabled="activeJob(job.id)" @click="emit('remove', job)"><Trash2 :size="16" /></button></div></td>
             </tr>
           </template>
         </tbody>

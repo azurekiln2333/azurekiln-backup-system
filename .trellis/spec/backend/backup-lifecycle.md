@@ -90,8 +90,10 @@ Apply when changing site CRUD, shared site validation, job deletion or system-st
 
 ### 3. Contracts
 
-- Input is `{name,domains,tags,backupJobIds}`. Name is trimmed, required, at most 100 characters. Arrays default to `[]`; domains and links may be empty. Output adds server-owned `id`, `createdAt`, `updatedAt`, with no embedded private jobs or secrets.
+- Input is `{name,domains,tags,repositoryUrls,notes,backupJobIds}`. Name is trimmed, required, at most 100 characters. Arrays default to `[]`; domains, repositories and links may be empty. Notes default to `''`. Output adds server-owned `id`, `createdAt`, `updatedAt`, with no embedded private jobs or secrets. Both public `siteView` and saved JSON metadata must explicitly include new metadata; shared schema defaults alone do not persist it.
 - Domains accept up to 20 entries, each at most 2048 characters before and after normalization. Bare hosts default to HTTPS; URL parsing normalizes host/default port while preserving path/query/fragment semantics. Deduplicate identical canonical hrefs, preserving first order. Validation performs no network requests.
+- Repositories accept up to 20 HTTP(S) browser URLs of at most 2048 characters. Exact recognized hosts are github.com, cnb.cool, gitee.com, gitcode.com and hub.gitcode.com. Bare addresses default to HTTPS; explicit HTTP, submitted alias, case-sensitive path/query/fragment and `.git` survive normalization. Require at least owner/group plus repository path, reject credentials/control whitespace/backslashes/nondefault ports, deduplicate canonical hrefs in order and never probe providers. Shared `normalizeSiteRepository`, `siteRepositorySchema`, `siteRepositoryProvider` and `siteRepositoryLink` own validation and projection.
+- Notes are trimmed plain text of at most 500 characters; preserve internal newlines. Omitted PATCH fields preserve prior data, `repositoryUrls:[]` and `notes:''` clear independently, and invalid input rejects the whole metadata/link write. Legacy records missing either field read with its empty default without a startup bulk rewrite.
 - Tags share the existing 10 × 32-character rules, with independent site/job values. Job IDs are bounded to 200 entries of 1–100 characters and deduplicated in request order. Typed JS transforms must expose `string[]` output to TypeScript consumers.
 - `site_jobs` is the sole association source. Site JSON holds metadata/timestamps only. `backupJobIds` is projected on every read; never copy it into job JSON.
 - `saveSite` merges a PATCH into the previous record before schema defaults apply, then validates all referenced jobs and writes metadata/replacement links in one store-owned transaction. Omitted arrays preserve values, supplied arrays replace, and `[]` clears.
@@ -123,3 +125,53 @@ Apply when changing site CRUD, shared site validation, job deletion or system-st
 Wrong: store `backupJobIds` in both site JSON and a join table, use `UNIQUE(job_id)`, or apply partial-schema defaults before merging a PATCH.
 
 Correct: project IDs from the composite-key relation, and merge → validate → transactionally replace metadata and links. A failed write leaves the prior authoritative record intact.
+
+## Single-file backups and paused job cloning
+
+### 1. Scope / Trigger
+
+Apply to job-type changes, source validation, archive preparation and clone APIs. Both workflows reuse the existing SQLite job model and backup lifecycle.
+
+### 2. Signatures
+
+- `jobSchema.type` includes `file`; its existing `sourcePath` identifies exactly one regular file.
+- `resolveSourcePath(config,input,{allowMissing?,directory?,file?})` adds a regular-file requirement with `file:true`.
+- `POST /api/jobs/:id/clone` accepts an optional strict `{name?:string}` body and returns 201 with a public Job.
+- `store.cloneJob(sourceId,validatedInput)` writes the paused copy and its site relations in one transaction.
+
+### 3. Contracts
+
+- File save/execution enforce existing allowed-root, component-symlink, realpath and state-overlap boundaries. Zero-byte files are valid. Directory jobs still reject files; file jobs reject directories/special files. Missing-source exceptions apply only to existing pause flows and paused cloning, not ordinary creation/execution.
+- File preparation revalidates the source and creates a one-member `file.<stamp>.tar` under the run-owned payload. The member uses its basename, with option-safe argv; never archive the parent as `.`. Compression/encryption, quota monitor, cancellation, archive/upload verification, destination retention and cleanup remain shared. Directory-only watch/incremental features are unavailable, and file exclusions normalize to `[]`.
+- Cloning uses the private source and schema projection, retaining archive/database secrets, configuration and destination IDs. IDs are job-scoped for retention. Give the copy a fresh identity/timestamps, bounded name (100 UTF-16 code units), `enabled:false`, `lastRun:null` and `nextRunAt:null`. Copy no runs, logs, queue state, baseline or remote completion ownership.
+- Copy site associations atomically and preserve existing site metadata/timestamps. Select sites with `WHERE job_id=?`; `siteJobIds(siteId)` is the opposite lookup and cannot serve this operation. Enforce the site's 200-link limit before insertion; a failed relation write rolls back the new job too.
+- Retain schedule/watch configuration under the disabled job, allowing an active original to be cloned. Do not refresh scheduler/watchers or enqueue on clone: scheduler refresh would modify original runtime timestamps. Existing timers/watchers remain unchanged. Public DTOs never contain plaintext secret values.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Extant non-file supplied to a file task | 400 `SOURCE_NOT_FILE` |
+| Missing required source / forbidden source / source symlink | Existing 404 `SOURCE_PATH_MISSING` / 403 `SOURCE_PATH_FORBIDDEN` / 403 `SOURCE_SYMLINK_FORBIDDEN` |
+| File task enables watching | 400 `WATCH_DIRECTORY_ONLY` |
+| Unknown clone source | 404 `JOB_NOT_FOUND` |
+| Fixed system-config clone | 409 `SYSTEM_JOB_CLONE_FORBIDDEN` |
+| Invalid clone name/body or unexpected config overrides | 400 `VALIDATION_FAILED` |
+| Any linked site is at its association limit | 409 `SITE_JOB_LIMIT_REACHED`; no new job or links |
+| Clone without authenticated session/CSRF | Existing 401/403 boundary |
+
+### 5. Good / Base / Bad Cases
+
+- Good: cloning a shared encrypted task preserves private secrets and adds the paused copy to every linked site, with independent history.
+- Base: an empty ordinary file backs up and extracts as the same empty basename; a paused clone may retain a temporarily missing allowed source.
+- Bad: packing a file's parent leaks siblings, reposting a public Job drops passwords, or cloning refreshes and changes the original schedule state.
+
+### 6. Tests Required
+
+`tests/file-clone.test.mjs` checks HTTP/SQLite type/path/auth/clone boundaries, private secret retention and public redaction, fresh paused identity/history/baseline, shared site relations/limits/transaction rollback, original independence and bounded Unicode naming. Real encrypted archive extraction must prove exact filename and bytes, absence of siblings, wrong-password failure and cleanup. Browser checks exercise real file selection/create/run and server-side cloning. Run full suites sequentially with local real tools.
+
+### 7. Wrong vs Correct
+
+Wrong: `POST /jobs` with a copied public DTO, or `tar -C dirname(source) .` for a file task.
+
+Correct: clone the private configuration on the server, atomically save fresh paused job/link rows, and tar only the option-safe selected basename.

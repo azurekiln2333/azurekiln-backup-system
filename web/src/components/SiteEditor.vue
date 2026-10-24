@@ -3,7 +3,10 @@ import { computed, reactive, ref } from 'vue';
 import { Plus, Save, Search, Trash2 } from 'lucide-vue-next';
 import { ApiError } from '../api';
 import { friendlyError, rawError } from '../errors';
-import { SITE_DOMAIN_LIMIT, SITE_DOMAIN_MAX_LENGTH, siteDomainLink, siteSchema } from '../../../shared/contracts.mjs';
+import {
+  SITE_DOMAIN_LIMIT, SITE_DOMAIN_MAX_LENGTH, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT, SITE_REPOSITORY_MAX_LENGTH,
+  siteDomainHostname, siteDomainLink, siteRepositoryLink, siteSchema,
+} from '../../../shared/contracts.mjs';
 import Modal from './Modal.vue';
 import TagInput from './TagInput.vue';
 import type { Job, Site, SiteInput } from '../types';
@@ -30,16 +33,18 @@ const form = reactive({
   name: props.site?.name ?? '',
   domains: [...(props.site?.domains ?? [])],
   tags: [...(props.site?.tags ?? [])],
+  repositoryUrls: [...(props.site?.repositoryUrls ?? [])],
+  notes: props.site?.notes ?? '',
   backupJobIds: [...(props.site?.backupJobIds ?? [])],
 });
-const errors = ref<{ name?: string; domains?: string; tags?: string; jobs?: string }>({});
+const errors = ref<{ name?: string; domains?: string; tags?: string; repositories?: string; notes?: string; jobs?: string }>({});
 const error = ref('');
 /** Raw low-level text, tooltip only; user-facing copy goes through friendlyError. */
 const errorDetail = ref('');
 const saving = ref(false);
 const jobSearch = ref('');
 
-const typeLabels: Record<Job['type'], string> = { directory: '目录备份', vaultwarden: 'Vaultwarden', newapi: 'NewAPI', system: '系统配置' };
+const typeLabels: Record<Job['type'], string> = { directory: '目录备份', file: '单文件备份', vaultwarden: 'Vaultwarden', newapi: 'NewAPI', system: '系统配置' };
 const jobSource = (job: Job) => job.type === 'system' ? '本系统配置' : job.type === 'vaultwarden' ? job.vaultwarden.dataDir : job.type === 'newapi' ? job.newapi.dataDir : job.sourcePath;
 const siteTagSuggestions = computed<string[]>(() => [...new Set<string>(props.sites.flatMap(site => site.tags as string[]))].sort((a, b) => a.localeCompare(b, 'zh')));
 const otherSites = (jobId: string) => props.sites.filter(site => site.id !== props.site?.id && site.backupJobIds.includes(jobId)).length;
@@ -71,6 +76,8 @@ function fieldMessage(field: string, message: string) {
   if (field === 'name') return '请输入 1-100 个字符的站点名称';
   if (field === 'domains') return message || '地址必须是主机名或 HTTP(S) 地址。';
   if (field === 'tags') return /at most 10/.test(message) ? '最多 10 个标签' : (message || '标签无效。');
+  if (field === 'repositoryUrls') return /at most/.test(message) ? `最多 ${SITE_REPOSITORY_LIMIT} 个仓库地址` : (message || '仓库地址无效。');
+  if (field === 'notes') return /at most/.test(message) ? `备注最多 ${SITE_NOTES_MAX_LENGTH} 个字符` : (message || '备注无效。');
   if (field === 'backupJobIds') return /at most/.test(message) ? '关联任务过多。' : '关联任务无效。';
   return message || '请检查站点信息。';
 }
@@ -81,13 +88,33 @@ function toggleJob(id: string) {
   else form.backupJobIds.push(id);
 }
 function normalizeDomains() { return form.domains.map(value => value.trim()).filter(Boolean); }
-const previewDomains = computed(() => normalizeDomains().map(value => { try { return siteDomainLink(value).label; } catch { return value; } }));
+function normalizeRepositories() { return form.repositoryUrls.map(value => value.trim()).filter(Boolean); }
+
+/**
+ * Full-address preview for the editor only. The list row shows the first
+ * hostname, so the editor keeps the complete canonical form visible here.
+ */
+const addressPreview = computed(() => normalizeDomains().map(value => {
+  try {
+    return { host: siteDomainHostname(value) as string, full: (siteDomainLink(value) as { href: string }).href };
+  } catch {
+    return { host: value, full: value };
+  }
+}));
+const firstHostname = computed(() => addressPreview.value[0]?.host ?? '');
+const repositoryPreview = computed(() => normalizeRepositories().map(value => {
+  try {
+    return (siteRepositoryLink(value) as { label: string }).label;
+  } catch {
+    return value;
+  }
+}));
 
 /** Localized save copy; site-specific codes get explicit Chinese instead of raw English. */
 function siteFailure(cause: unknown) {
   if (cause instanceof ApiError) {
     if (cause.code === 'SITE_NOT_FOUND') return '该站点已被删除，请关闭后重新创建。';
-    if (cause.code === 'VALIDATION_FAILED') return '站点信息未通过校验，请检查名称、地址和标签。';
+    if (cause.code === 'VALIDATION_FAILED') return '站点信息未通过校验，请检查名称、地址、仓库和标签。';
   }
   return friendlyError(cause, '保存站点失败，请稍后重试');
 }
@@ -96,8 +123,15 @@ async function save() {
   error.value = '';
   errorDetail.value = '';
   // Validate the whole site with the same shared schema the API uses; empty
-  // address rows are treated as "not filled yet" and dropped.
-  const payload = { name: form.name, domains: normalizeDomains(), tags: form.tags, backupJobIds: form.backupJobIds };
+  // address/repository rows are treated as "not filled yet" and dropped.
+  const payload = {
+    name: form.name,
+    domains: normalizeDomains(),
+    tags: form.tags,
+    repositoryUrls: normalizeRepositories(),
+    notes: form.notes,
+    backupJobIds: form.backupJobIds,
+  };
   const parsed = siteSchema.safeParse(payload);
   if (!parsed.success) {
     const byField: Record<string, string> = {};
@@ -105,8 +139,15 @@ async function save() {
       const field = String(issue.path[0] ?? '');
       if (!byField[field]) byField[field] = fieldMessage(field, issue.message);
     }
-    errors.value = { name: byField.name, domains: byField.domains, tags: byField.tags, jobs: byField.backupJobIds };
-    error.value = byField.domains || byField.tags || byField.name || byField.backupJobIds || '请检查站点信息。';
+    errors.value = {
+      name: byField.name,
+      domains: byField.domains,
+      tags: byField.tags,
+      repositories: byField.repositoryUrls,
+      notes: byField.notes,
+      jobs: byField.backupJobIds,
+    };
+    error.value = byField.domains || byField.repositoryUrls || byField.notes || byField.tags || byField.name || byField.backupJobIds || '请检查站点信息。';
     return;
   }
   if (staleJobIds.value.length) {
@@ -146,6 +187,7 @@ async function save() {
         <div v-if="editedSiteGone" class="notice warning" role="status">该站点已在其他位置被删除；当前草稿仍保留，保存会失败，建议关闭后重新创建。</div>
         <div class="form-grid">
           <label class="field full">站点名称<input v-model="form.name" maxlength="100" placeholder="例如 官网" /><small v-if="errors.name" class="field-error">{{ errors.name }}</small></label>
+
           <div class="field full">
             <span>访问地址</span>
             <div class="domain-editor">
@@ -155,13 +197,38 @@ async function save() {
               </div>
               <div class="domain-actions">
                 <button type="button" class="button secondary small" :disabled="form.domains.length >= SITE_DOMAIN_LIMIT" @click="form.domains.push('')"><Plus :size="15" />添加地址</button>
-                <span class="muted">可填裸域名（默认 https）或完整 HTTP(S) 地址，最多 {{ SITE_DOMAIN_LIMIT }} 个，不能包含账号密码。</span>
+                <span class="muted">裸域名默认 https，最多 {{ SITE_DOMAIN_LIMIT }} 个，不能包含账号密码。</span>
               </div>
+              <p class="field-hint">列表只显示第一个地址的主机名<template v-if="firstHostname">（<span class="mono">{{ firstHostname }}</span>）</template>，点击仍会打开完整地址；全部地址都会保留。</p>
               <small v-if="errors.domains" class="field-error">{{ errors.domains }}</small>
             </div>
           </div>
+
           <TagInput v-model="form.tags" :suggestions="siteTagSuggestions" label="站点标签" placeholder="例如 生产，回车添加" />
           <small v-if="errors.tags" class="field-error full">{{ errors.tags }}</small>
+
+          <div class="field full">
+            <span>仓库地址</span>
+            <div class="domain-editor">
+              <div v-for="(repository, index) in form.repositoryUrls" :key="index" class="domain-row">
+                <input v-model="form.repositoryUrls[index]" :maxlength="SITE_REPOSITORY_MAX_LENGTH" :aria-label="`仓库地址 ${index + 1}`" placeholder="https://github.com/owner/repo" />
+                <button type="button" class="icon-button danger" :title="`删除仓库 ${index + 1}`" :aria-label="`删除仓库 ${index + 1}`" @click="form.repositoryUrls.splice(index, 1)"><Trash2 :size="16" /></button>
+              </div>
+              <div class="domain-actions">
+                <button type="button" class="button secondary small" :disabled="form.repositoryUrls.length >= SITE_REPOSITORY_LIMIT" @click="form.repositoryUrls.push('')"><Plus :size="15" />添加仓库</button>
+                <span class="muted">支持 GitHub、CNB、Gitee、GitCode，最多 {{ SITE_REPOSITORY_LIMIT }} 个。</span>
+              </div>
+              <p v-if="repositoryPreview.length" class="field-hint">将显示：<span class="mono">{{ repositoryPreview.join('、') }}</span></p>
+              <small v-if="errors.repositories" class="field-error">{{ errors.repositories }}</small>
+            </div>
+          </div>
+
+          <label class="field full">备注
+            <textarea v-model="form.notes" :maxlength="SITE_NOTES_MAX_LENGTH" rows="3" aria-label="站点备注" placeholder="可选，例如：主站，变更需通知运维" />
+            <small class="field-hint">纯文本，最多 {{ SITE_NOTES_MAX_LENGTH }} 个字符；列表只显示一行预览，完整内容在这里查看。</small>
+            <small v-if="errors.notes" class="field-error">{{ errors.notes }}</small>
+          </label>
+
           <div class="field full">
             <span>关联备份任务<template v-if="form.backupJobIds.length"> · 已选 {{ form.backupJobIds.length }} 个</template></span>
             <label class="search-field site-job-search"><Search :size="16" /><input v-model="jobSearch" aria-label="搜索可关联任务" placeholder="搜索任务名称、类型或来源" /></label>
@@ -178,7 +245,6 @@ async function save() {
             <small v-if="errors.jobs" class="field-error">{{ errors.jobs }}</small>
             <small class="muted">关联只是记录站点与任务的关系，不会修改任务的计划、密码、目标或启用状态，也不会把一个任务从其他站点移走。</small>
           </div>
-          <div class="field full site-preview"><span>预览</span><strong class="site-preview-name">{{ form.name.trim() || '未命名站点' }}</strong><span class="muted">{{ previewDomains.join('、') || '未填写访问地址' }}</span></div>
         </div>
       </div>
       <footer class="modal-footer"><button class="button secondary" type="button" @click="emit('close')">取消</button><button class="button primary" :disabled="saving"><Save :size="16" />{{ saving ? '保存中…' : site ? '保存站点' : '创建站点' }}</button></footer>

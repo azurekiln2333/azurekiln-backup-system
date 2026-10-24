@@ -9,7 +9,7 @@
 //
 // Usage: npm run check:layout   (requires `npm run build` first)
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -99,7 +99,7 @@ const probe = (page) => page.evaluate(() => {
     sidebarWidth: rect('.sidebar')?.width ?? null,
     sidebarTop: rect('.sidebar')?.top ?? null,
     workspace: { left: rect('.workspace')?.left ?? null, top: rect('.workspace')?.top ?? null, right: rect('.workspace')?.right ?? null, radius: css('.workspace')?.borderTopLeftRadius ?? null },
-    main: { maxWidth: css('.main-content')?.maxWidth ?? null, padding: css('.main-content') ? [css('.main-content').paddingTop, css('.main-content').paddingRight, css('.main-content').paddingBottom, css('.main-content').paddingLeft].join(' ') : null, left: mainRect?.left ?? null, right: mainRect?.right ?? null, width: mainRect?.width ?? null },
+    main: { maxWidth: css('.main-content')?.maxWidth ?? null, padding: css('.main-content') ? [css('.main-content').paddingTop, css('.main-content').paddingRight, css('.main-content').paddingBottom, css('.main-content').paddingLeft] : null, left: mainRect?.left ?? null, right: mainRect?.right ?? null, width: mainRect?.width ?? null },
     h1Count: document.querySelectorAll('.main-content h1').length,
     h1Text: main?.querySelector('h1')?.textContent?.trim() ?? null,
     shellContext: document.querySelector('.shell-context')?.textContent?.trim() ?? null,
@@ -118,27 +118,32 @@ const probe = (page) => page.evaluate(() => {
     brandAriaLabel: document.querySelector('.shell-brand .brand')?.getAttribute('aria-label') ?? null,
     // The overview task list must actually show its primary information: a row
     // that renders only the status chip and the run button is a regression.
-    overviewRows: [...document.querySelectorAll('.overview-job')].map((row) => {
-      const name = row.querySelector('.job-primary strong');
-      const source = row.querySelector('.job-primary span.mono');
-      const icon = row.querySelector('.job-symbol');
+    // Overview keeps its operational panels but replaces the task preview with a
+    // site list that reuses the shared row contract.
+    overviewSiteRows: [...document.querySelectorAll('.overview-site-list .site-row')].map((row) => {
       const visible = (el) => {
         if (!el) return false;
         const r = el.getBoundingClientRect();
         const c = getComputedStyle(el);
         return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' && Number(c.opacity) > 0;
       };
+      const name = row.querySelector('.site-name');
+      const host = row.querySelector('.site-domain.site-host');
+      const repos = [...row.querySelectorAll('.site-repo .site-repo-label')];
+      const jobs = [...row.querySelectorAll('.site-job .site-job-name')];
       return {
         text: name?.textContent?.trim() ?? null,
         nameVisible: visible(name),
         nameWidth: name ? Math.round(name.getBoundingClientRect().width) : 0,
-        sourceVisible: visible(source),
-        iconVisible: visible(icon),
+        hostVisible: visible(host),
+        reposVisible: repos.length > 0 && repos.every(visible),
+        jobsVisible: jobs.length > 0 && jobs.every(visible),
         rowWidth: Math.round(row.getBoundingClientRect().width),
       };
     }),
-    // Site rows must expose their name, domains and *actual linked task names*
-    // at every width/theme; a count hidden in a modal is not enough.
+    // Site rows expose the name and the *first selected hostname* on one identity
+    // line, repository labels and actual linked task names; the list renders exactly
+    // one address link while the editor keeps every saved address.
     siteRows: [...document.querySelectorAll('.main-content .site-row')].map((row) => {
       const visible = (el) => {
         if (!el) return false;
@@ -147,17 +152,33 @@ const probe = (page) => page.evaluate(() => {
         return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' && Number(c.opacity) > 0;
       };
       const name = row.querySelector('.site-name');
-      const domains = [...row.querySelectorAll('.site-domain')];
+      const host = row.querySelector('.site-domain.site-host');
+      const repos = [...row.querySelectorAll('.site-repo .site-repo-label')];
       const jobs = [...row.querySelectorAll('.site-job .site-job-name')];
+      const note = row.querySelector('.site-note');
+      const rowRect = row.getBoundingClientRect();
+      const nameRect = name?.getBoundingClientRect();
+      const hostRect = host?.getBoundingClientRect();
       return {
         name: name?.textContent?.trim() ?? null,
         nameVisible: visible(name),
-        nameWidth: name ? Math.round(name.getBoundingClientRect().width) : 0,
-        domains: domains.map((el) => el.textContent.trim()),
-        domainsVisible: domains.length > 0 && domains.every(visible),
+        nameWidth: nameRect ? Math.round(nameRect.width) : 0,
+        addressLinks: row.querySelectorAll('.site-domain').length,
+        host: host?.textContent?.trim() ?? null,
+        hostVisible: visible(host),
+        hostWidth: hostRect ? Math.round(hostRect.width) : 0,
+        addressHref: host?.getAttribute('href') ?? null,
+        sameIdentityLine: Boolean(nameRect && hostRect) && Math.abs(nameRect.top - hostRect.top) <= Math.max(4, nameRect.height * 0.5),
+        repos: repos.map((el) => el.textContent.trim()),
+        reposVisible: repos.length > 0 && repos.every(visible),
         jobs: jobs.map((el) => el.textContent.trim()),
         jobsVisible: jobs.length > 0 && jobs.every(visible),
-        rowWidth: Math.round(row.getBoundingClientRect().width),
+        note: note?.textContent?.trim() ?? '',
+        noteVisible: visible(note),
+        rowWidth: Math.round(rowRect.width),
+        top: Math.round(rowRect.top),
+        height: Math.round(rowRect.height),
+        complete: rowRect.top >= 48 && rowRect.bottom <= window.innerHeight,
       };
     }),
     navGroupLabels: [...document.querySelectorAll('.nav-label')].map((n) => n.textContent.trim()),
@@ -210,28 +231,46 @@ const probe = (page) => page.evaluate(() => {
  */
 function assertSiteVisibility(m, where) {
   assert.ok(m.siteRows.length >= 2, `${where}: populated site rows render (${m.siteRows.length})`);
-  const populated = m.siteRows.find((row) => row.name === '总部门户');
+  const populated = m.siteRows.find((row) => row.name === '官网门户');
   assert.ok(populated, `${where}: fixture site is listed by name`);
   assert.equal(populated.nameVisible, true, `${where}: site name is visible`);
   assert.ok(populated.nameWidth > 0, `${where}: site name has width (${populated.nameWidth})`);
-  assert.ok(populated.domains.some((domain) => domain.includes('example.com')), `${where}: domain is displayed (${populated.domains.join(', ')})`);
-  assert.equal(populated.domainsVisible, true, `${where}: every domain link is visible`);
+  assert.equal(populated.addressLinks, 1, `${where}: exactly one list address link renders (${populated.addressLinks})`);
+  assert.equal(populated.host, 'site1.example.com', `${where}: the first saved address hostname is the label (${populated.host})`);
+  assert.equal(populated.hostVisible, true, `${where}: selected hostname is visible`);
+  assert.ok(populated.hostWidth > 0, `${where}: selected hostname has width (${populated.hostWidth})`);
+  assert.equal(populated.sameIdentityLine, true, `${where}: site name and first hostname share one identity line`);
+  assert.equal(populated.addressHref, 'https://site1.example.com/', `${where}: the link keeps the complete safe href (${populated.addressHref})`);
+  assert.ok(populated.repos.some((label) => label.includes('owner/site1')) && populated.repos.some((label) => label.includes('owner/site1-mirror')), `${where}: same-provider repository labels are distinguishable (${populated.repos.join(', ')})`);
+  assert.equal(populated.reposVisible, true, `${where}: every repository label is visible`);
   assert.ok(populated.jobs.includes('官网备份') && populated.jobs.includes('共享数据库'), `${where}: actual linked task names are displayed (${populated.jobs.join(', ')})`);
   assert.equal(populated.jobsVisible, true, `${where}: every linked task label is visible`);
-  const shared = m.siteRows.find((row) => row.name === '共享站点');
+  const shared = m.siteRows.find((row) => row.name === '数据中台');
   assert.ok(shared && shared.jobs.includes('共享数据库'), `${where}: a shared job appears under both sites`);
   assert.ok(populated.rowWidth > 0, `${where}: site row has layout width`);
+  assert.equal(populated.noteVisible, true, `${where}: a nonempty note preview is visible`);
+}
+
+/** Standard-density guard: complete standard rows and max standard row height. */
+function assertStandardDensity(m, where, vp) {
+  const thresholds = { 1440: { minRows: 6, maxHeight: 104 }, 390: { minRows: 3, maxHeight: 156 }, 360: { minRows: 3, maxHeight: 156 } }[vp.name];
+  if (!thresholds) return;
+  const complete = m.siteRows.filter((row) => row.complete).length;
+  const maxHeight = m.siteRows.reduce((max, row) => Math.max(max, row.height), 0);
+  assert.ok(complete >= thresholds.minRows, `${where}: at least ${thresholds.minRows} complete standard rows (${complete})`);
+  assert.ok(maxHeight <= thresholds.maxHeight, `${where}: standard site row height <= ${thresholds.maxHeight}px (${maxHeight})`);
 }
 
 const statsProbe = (page) => page.evaluate(() => [...document.querySelectorAll('.stat')].map((s) => {
   const c = getComputedStyle(s);
   const r = s.querySelector('svg')?.getBoundingClientRect();
-  return { borders: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth], background: c.backgroundColor, padding: c.padding, icon: r ? [r.width, r.height] : null };
+  return { borders: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth], background: c.backgroundColor, padding: [c.paddingTop, c.paddingRight, c.paddingBottom, c.paddingLeft], icon: r ? [r.width, r.height] : null };
 }));
 
 let runtime, server, browser, context, page;
 let checks = 0;
 const overviewRowSummary = { rows: 0, named: 0, combos: 0, texts: new Set() };
+const densityMetrics = { viewports: {} };
 try {
   runtime = await createApp({ config: loadConfig({ DATA_DIR: path.join(root, 'state'), SOURCE_ROOTS: sourceRoot, BACKUP_PORT: String(port) }, root) });
   server = await new Promise((resolve) => { const s = runtime.app.listen(port, '127.0.0.1', () => resolve(s)); });
@@ -270,9 +309,36 @@ try {
   const canonicalRoot = runtime.config.sourceRoots[0];
   const primaryJob = await writeApi('/jobs', fixtureJob('官网备份', path.join(canonicalRoot, 'demo')));
   const sharedJob = await writeApi('/jobs', fixtureJob('共享数据库', path.join(canonicalRoot, 'demo')));
-  const primarySite = await writeApi('/sites', { name: '总部门户', domains: ['example.com', 'https://portal.example.com/app'], tags: ['prod', 'web'], backupJobIds: [primaryJob.id, sharedJob.id] });
-  await writeApi('/sites', { name: '共享站点', domains: [], tags: ['prod'], backupJobIds: [sharedJob.id] });
-  assert.equal(primarySite.name, '总部门户');
+  // Same eight-site furniture as the recorded pre-change baseline
+  // (.artifacts/baseline-density/baseline.json, captured 2026-10-24): identical
+  // names, addresses, tags and shared jobs. The final UI adds two distinct
+  // repositories and a short note to *every* row, so the before/after density
+  // comparison uses the same data instead of easier one-repository rows.
+  const fixtureSites = [
+    { name: '官网门户', domains: ['https://site1.example.com/', 'https://portal.site1.example.com:8443/app'], repos: ['https://github.com/owner/site1', 'https://github.com/owner/site1-mirror'], note: '官网主入口' },
+    { name: '数据中台', domains: ['https://site2.example.com/', 'https://portal.site2.example.com:8443/app'], repos: ['https://github.com/owner/site2', 'https://github.com/owner/site2-mirror'], note: '数据服务' },
+    { name: '支付网关', domains: ['https://site3.example.com/', 'https://portal.site3.example.com:8443/app'], repos: ['https://github.com/owner/site3', 'https://github.com/owner/site3-mirror'], note: '支付通道' },
+    { name: '会员中心', domains: ['https://site4.example.com/', 'https://portal.site4.example.com:8443/app'], repos: ['https://github.com/owner/site4', 'https://github.com/owner/site4-mirror'], note: '会员服务' },
+    { name: '开放平台', domains: ['https://site5.example.com/', 'https://portal.site5.example.com:8443/app'], repos: ['https://github.com/owner/site5', 'https://github.com/owner/site5-mirror'], note: '开放接口' },
+    { name: '运营后台', domains: ['https://site6.example.com/', 'https://portal.site6.example.com:8443/app'], repos: ['https://github.com/owner/site6', 'https://github.com/owner/site6-mirror'], note: '运营控制台' },
+    { name: '风控引擎', domains: ['https://site7.example.com/', 'https://portal.site7.example.com:8443/app'], repos: ['https://github.com/owner/site7', 'https://github.com/owner/site7-mirror'], note: '风控规则' },
+    { name: '消息总线', domains: ['https://site8.example.com/', 'https://portal.site8.example.com:8443/app'], repos: ['https://github.com/owner/site8', 'https://github.com/owner/site8-mirror'], note: '消息通道' },
+  ];
+  for (const site of fixtureSites) {
+    await writeApi('/sites', { name: site.name, domains: site.domains, tags: ['prod', 'web'], repositoryUrls: site.repos, notes: site.note, backupJobIds: [primaryJob.id, sharedJob.id] });
+  }
+  const seededSites = await readApi('/sites');
+  assert.equal(seededSites.length, 8, 'the eight-site density fixture is populated');
+  assert.deepEqual(seededSites.map((site) => site.name).sort(), fixtureSites.map((site) => site.name).sort(), 'the fixture names match the recorded baseline exactly');
+  assert.ok(seededSites.every((site) => site.repositoryUrls.length === 2), 'every standard row carries two repositories');
+  assert.ok(seededSites.every((site) => site.notes.length > 0), 'every standard row carries a short note');
+
+  // The fixture was created through the API after the SPA had already loaded an empty
+  // inventory, and every later navigation is a hash-only goto (same document) that never
+  // re-reads /sites. Reload once so the app picks up the eight seeded sites before the
+  // page matrix runs; otherwise the overview renders zero site rows.
+  await page.reload();
+  await page.locator('.main-content h1').waitFor();
 
   const matrix = { pages: pages.length, viewports: viewports.length, themes: 2, screenshots: 0 };
 
@@ -298,6 +364,9 @@ try {
         }
         await page.waitForTimeout(220);
         if (target.id === 'sites') await page.locator('.main-content .site-row').first().waitFor();
+        // Site rows come from async state; wait for real readiness instead of relying on the
+        // fixed settle delay, so the probe never samples a zero-row frame on the overview.
+        if (target.id === 'overview') await page.locator('.overview-site-list .site-row').first().waitFor();
         const m = await probe(page);
         const where = `${theme}/${vp.name}/${target.id}`;
 
@@ -320,22 +389,33 @@ try {
         if (m.liveIndicator && !m.brandText?.hidden) assert.equal(m.liveIndicator.clipped, false, `${where}: status text not clipped`);
         if (m.brandText && !m.brandText.hidden) assert.equal(m.brandText.ellipsis, 'ellipsis', `${where}: brand ellipsizes`);
 
-        if (target.id === 'sites') assertSiteVisibility(m, where);
+        if (target.id === 'sites') {
+          assertSiteVisibility(m, where);
+          assertStandardDensity(m, where, vp);
+          densityMetrics.viewports[`${theme}/${vp.name}`] = {
+            theme,
+            viewport: `${vp.width}x${vp.height}`,
+            completeCount: m.siteRows.filter((row) => row.complete).length,
+            maxRowHeight: m.siteRows.reduce((max, row) => Math.max(max, row.height), 0),
+            firstRowTop: m.siteRows[0]?.top ?? null,
+            rows: m.siteRows.map((row) => ({ name: row.name, height: row.height, top: row.top, complete: row.complete })),
+          };
+        }
 
         if (target.id === 'overview') {
-          // The list must exist and must be fully readable at every width/theme:
-          // silently skipping when zero rows render would hide a blank overview.
-          assert.ok(m.overviewRows.length > 0, `${where}: overview renders task rows`);
-          assert.ok(m.overviewRows.some((r) => r.text === '系统配置'), `${where}: built-in 系统配置 row is listed`);
-          overviewRowSummary.rows += m.overviewRows.length;
+          // The preview must exist and stay readable at every width/theme; silently
+          // skipping when zero rows render would hide a blank overview.
+          assert.ok(m.overviewSiteRows.length > 0, `${where}: overview renders site rows`);
+          overviewRowSummary.rows += m.overviewSiteRows.length;
           overviewRowSummary.combos += 1;
-          for (const row of m.overviewRows) {
+          for (const row of m.overviewSiteRows) {
             if (row.nameVisible && row.nameWidth > 0) overviewRowSummary.named += 1;
             if (row.text) overviewRowSummary.texts.add(row.text);
-            assert.equal(row.nameVisible, true, `${where}: row "${row.text}" shows its name`);
-            assert.ok(row.nameWidth > 0, `${where}: row "${row.text}" name has width (${row.nameWidth})`);
-            assert.equal(row.iconVisible, true, `${where}: row "${row.text}" shows its type icon`);
-            assert.equal(row.sourceVisible, true, `${where}: row "${row.text}" shows its source`);
+            assert.equal(row.nameVisible, true, `${where}: overview site "${row.text}" shows its name`);
+            assert.ok(row.nameWidth > 0, `${where}: overview site "${row.text}" name has width (${row.nameWidth})`);
+            assert.equal(row.hostVisible, true, `${where}: overview site "${row.text}" shows its first hostname`);
+            assert.equal(row.reposVisible, true, `${where}: overview site "${row.text}" shows its repository labels`);
+            assert.equal(row.jobsVisible, true, `${where}: overview site "${row.text}" shows its linked task names`);
           }
         }
 
@@ -348,7 +428,7 @@ try {
           assert.equal(m.workspace.top, 56, `${where}: workspace top`);
           assert.equal(m.workspace.radius, '8px', `${where}: workspace radius`);
           assert.equal(m.main.maxWidth, '1600px', `${where}: main max-width`);
-          assert.equal(m.main.padding, '20px 24px 28px 24px', `${where}: desktop main padding`);
+          assert.deepEqual(m.main.padding, ['14px', '16px', '18px', '16px'], `${where}: desktop main padding`);
           if (target.id === 'overview') assert.deepEqual(m.navGroupLabels, ['工作区', '监控', '系统'], `${where}: nav groups`);
         } else {
           assert.equal(m.workspace.left, 8, `${where}: no phantom rail gutter`);
@@ -424,6 +504,24 @@ try {
     }
   }
 
+  // Record the measured density before the remaining guards so the artifact exists
+  // even if a later, unrelated assertion fails. The fixture mirrors the recorded
+  // baseline furniture exactly.
+  await writeFile(path.join(screenshotDir, 'density-metrics.json'), JSON.stringify({
+    capturedAt: new Date().toISOString(),
+    baseline: '.artifacts/baseline-density/baseline.json (captured 2026-10-24T18:52:58.687Z)',
+    fixture: {
+      names: seededSites.map((site) => site.name),
+      domains: seededSites.map((site) => site.domains),
+      tags: ['prod', 'web'],
+      jobs: ['官网备份', '共享数据库'],
+      repositoriesPerRow: 2,
+      notesPerRow: 1,
+    },
+    targets: { '1440x900': { minCompleteRows: 6, maxRowHeight: 104 }, '390x844': { minCompleteRows: 3, maxRowHeight: 156 }, '360x780': { minCompleteRows: 3, maxRowHeight: 156 } },
+    viewports: densityMetrics.viewports,
+  }, null, 2));
+
   // ---- Prove the production site-visibility guard can actually fail ----
   // Each fault hides exactly one field, then runs the *same* assertSiteVisibility
   // guard through assert.throws, so a weakened copy cannot pass silently.
@@ -439,13 +537,20 @@ try {
     assert.throws(() => assertSiteVisibility(hidden, 'negative/name'), /site name is visible/, 'hiding the site name fails the production guard');
   });
   await withTemporaryStyle('.site-domain { display: none !important; }', (hidden) => {
-    assert.throws(() => assertSiteVisibility(hidden, 'negative/domain'), /every domain link is visible/, 'hiding a domain link fails the production guard');
+    assert.throws(() => assertSiteVisibility(hidden, 'negative/host'), /selected hostname is visible/, 'hiding the first hostname fails the production guard');
+  });
+  await withTemporaryStyle('.site-repo-label { display: none !important; }', (hidden) => {
+    assert.throws(() => assertSiteVisibility(hidden, 'negative/repo'), /every repository label is visible/, 'hiding repository labels fails the production guard');
   });
   await withTemporaryStyle('.site-job-name { display: none !important; }', (hidden) => {
     assert.throws(() => assertSiteVisibility(hidden, 'negative/job'), /every linked task label is visible/, 'hiding a linked task label fails the production guard');
   });
+  await withTemporaryStyle('.site-row { padding-top: 60px !important; padding-bottom: 60px !important; }', (hidden) => {
+    assert.throws(() => assertStandardDensity(hidden, 'negative/padding', { name: '1440' }), /complete standard rows|standard site row height/, 'growing row padding fails the density guard');
+  });
   const restored = await probe(page);
   assert.doesNotThrow(() => assertSiteVisibility(restored, 'negative/restored'), 'the production guard passes again once every fault is removed');
+  assert.doesNotThrow(() => assertStandardDensity(restored, 'negative/restored', { name: '1440' }), 'the density guard passes again once padding is restored');
 
   // ---- R4: transparent, borderless stats with the agreed metrics ----
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -465,13 +570,14 @@ try {
   assert.equal(grid.kids[0].top, grid.kids[1].top, `desktop: content-grid panels align at the top (${grid.kids[0].top} vs ${grid.kids[1].top})`);
   assert.equal(grid.kids[0].left, grid.left, 'desktop: first panel starts at the grid edge');
   assert.ok(Math.abs(grid.kids[0].left + grid.kids[0].width + parseFloat(grid.gap) - grid.kids[1].left) <= 1, 'desktop: content-grid gap is honoured');
+  assert.equal(parseFloat(grid.gap), 12, `desktop: content-grid gap is 12px (got ${grid.gap})`);
   const ratio = grid.kids[0].width / grid.kids[1].width;  assert.ok(Math.abs(ratio - 1.6) < 0.06, `desktop: content-grid columns are 1.6fr : 1fr (got ${ratio.toFixed(3)})`);
   const stats = await statsProbe(page);
   assert.equal(stats.length, 4, 'overview renders four stats');
   stats.forEach((s, i) => {
     assert.deepEqual(s.borders, ['0px', '0px', '0px', '0px'], `stat ${i}: no border on any side`);
     assert.equal(s.background, 'rgba(0, 0, 0, 0)', `stat ${i}: transparent background`);
-    assert.equal(s.padding, '18px 20px', `stat ${i}: padding 18px 20px`);
+    assert.deepEqual(s.padding, ['10px', '14px', '10px', '14px'], `stat ${i}: padding 10px 14px`);
     assert.deepEqual(s.icon, [24, 24], `stat ${i}: 24px icon`);
   });
 
@@ -571,7 +677,7 @@ try {
     };
   });
   if (cellInset && !cellInset.inPanelBody) {
-    assert.ok(cellInset.gapFromBorder >= 19, `R3: flush table first cell is inset from the panel border (${cellInset.gapFromBorder}px)`);
+    assert.ok(cellInset.gapFromBorder >= 15, `R3: flush table first cell is inset by the 16px panel padding (${cellInset.gapFromBorder}px)`);
   }
   if (tableRules.thPosition !== null) {
     assert.equal(tableRules.thPosition, 'sticky', 'R3: table headers stick');
@@ -591,7 +697,7 @@ try {
   assert.equal(overviewRowSummary.combos, expectedCombos, `overview rows checked in all ${expectedCombos} viewport/theme combinations (got ${overviewRowSummary.combos})`);
   assert.equal(overviewRowSummary.named, overviewRowSummary.rows, `every overview row render shows a visible name (${overviewRowSummary.named}/${overviewRowSummary.rows})`);
   console.log(`Layout check passed: ${matrix.pages} pages x ${matrix.viewports} viewports x ${matrix.themes} themes (${matrix.screenshots} screenshots, ${checks} page renders asserted).`);
-  console.log(`Overview task rows: ${overviewRowSummary.combos}/${expectedCombos} combinations, ${overviewRowSummary.rows} row renders, ${overviewRowSummary.named} with a visible name (${[...overviewRowSummary.texts].join(', ')}).`);
+  console.log(`Overview site rows: ${overviewRowSummary.combos}/${expectedCombos} combinations, ${overviewRowSummary.rows} row renders, ${overviewRowSummary.named} with a visible name (${[...overviewRowSummary.texts].join(', ')}).`);
   console.log(`Sites matrix: populated rows checked in ${viewports.length * 2} viewport/theme combinations, including the failing negative control.`);
   console.log(`Screenshots: ${screenshotDir}`);
 } finally {

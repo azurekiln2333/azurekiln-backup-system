@@ -113,6 +113,11 @@ try {
     assert.ok(response.ok(), `${route}: ${await response.text()}`);
     return response.json();
   };
+  const writeApi = async (route, body) => {
+    const response = await context.request.post(`${config.publicUrl}/api${route}`, { headers: { 'content-type': 'application/json', 'x-csrf-token': (await api('/auth/status')).csrfToken }, data: JSON.stringify(body) });
+    assert.ok(response.ok(), `POST ${route}: ${response.status()} ${await response.text()}`);
+    return response.json();
+  };
   const navigate = async id => {
     await page.goto(`${config.publicUrl}/#${id}`);
     await page.locator('.main-content h1').waitFor();
@@ -412,7 +417,7 @@ try {
   assert.equal((await api('/jobs')).find(job => job.name === 'Directory A').watch.debounceSeconds, 1);
   assert.equal((await api('/overview')).watchStatus[(await api('/jobs')).find(job => job.name === 'Directory A').id].state, 'watching');
   await page.getByRole('button', { name: '刷新', exact: true }).click();
-  const directoryRow = () => page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' });
+  const directoryRow = () => page.locator('.jobs-table tbody tr').filter({ has: page.getByText('Directory A', { exact: true }) });
   await directoryRow().waitFor();
   await directoryRow().getByRole('button', { name: '编辑任务' }).click();
   await dialog().getByRole('button', { name: '压缩与保留', exact: true }).click();
@@ -489,7 +494,7 @@ try {
   await screenshot('desktop-temp-storage-cleaned');
   await navigate('jobs');
   await screenshot('desktop-jobs');
-  await page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' }).locator('.job-primary').click();
+  await directoryRow().locator('.job-primary').click();
   await dialog().getByText('监听中 · 整个目录', { exact: true }).waitFor();
   await dialog().getByRole('button', { name: /备份版本/ }).click();
   await dialog().locator('.archive-row').waitFor();
@@ -507,7 +512,7 @@ try {
     await page.getByText('important.txt', { exact: true }).waitFor();
     await screenshot(`files-${viewport.width}`);
     await navigate('jobs');
-    await page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' }).getByRole('button', { name: '编辑任务' }).click();
+    await directoryRow().getByRole('button', { name: '编辑任务' }).click();
     await dialog().getByRole('button', { name: '计划与通知', exact: true }).click();
     await screenshot(`watch-editor-${viewport.width}`);
     await closeDialog();
@@ -576,6 +581,126 @@ try {
   await page.locator('.jobs-table tbody tr').first().getByRole('button', { name: 'mysql', exact: true }).click();
   assert.ok(await page.locator('.jobs-table tbody tr').count() > 2, 'clicking the active tag clears the filter');
 
+  // ---- Single-file source picker: a prefilled file must open its *parent* ----
+  // Regression for the reported bug where editing an existing single-file task and
+  // pressing Browse requested /sources?path=<file> and was rejected as not-a-directory.
+  const singleFilePath = path.join(sourceA, 'important.txt');
+  await writeApi('/jobs', { name: 'Report File', type: 'file', sourcePath: singleFilePath, destinations: [{ remote: 'AB', path: 'backups/report-file' }], archive: { format: '7z' } });
+  await navigate('jobs');
+  const reportRow = () => page.locator('.jobs-table tbody tr').filter({ hasText: 'Report File' });
+  await reportRow().waitFor();
+  await reportRow().getByRole('button', { name: '编辑任务' }).click();
+  await dialog().getByRole('button', { name: '浏览源文件' }).waitFor();
+  assert.equal(await dialog().getByText('系统状态、加密密钥、rclone 配置', { exact: true }).count(), 0, 'a single-file editor never describes a system-configuration backup');
+  const normalizePath = (value) => value.replaceAll('\\', '/').replace(/\/$/, '');
+  const filePicker = () => page.getByRole('dialog').filter({ hasText: '选择源文件' });
+  const pickerDisabled = () => filePicker().getByRole('button', { name: '选择此文件' }).isDisabled();
+
+  await dialog().getByRole('button', { name: '浏览源文件' }).click();
+  await filePicker().getByRole('heading', { name: '选择源文件' }).waitFor();
+  assert.equal(normalizePath(await filePicker().getByLabel('当前目录').inputValue()), normalizePath(sourceA), 'the file picker opens the parent directory, never the file path itself');
+  assert.equal(await pickerDisabled(), false, 'the existing regular file is preselected and confirmable');
+  assert.ok((await filePicker().locator('.picker-selected').innerText()).includes('important.txt'), 'the preselected file name is shown');
+
+  // Going up leaves the directory, so the stale selection must be cleared.
+  await filePicker().getByRole('button', { name: '上一级' }).click();
+  await poll(() => filePicker().getByLabel('当前目录').inputValue(), value => normalizePath(value) === normalizePath(sourceRoot), 'picker moved to the parent directory');
+  assert.equal(await pickerDisabled(), true, 'leaving the directory clears the file selection');
+  assert.ok((await filePicker().locator('.picker-selected').innerText()).includes('未选择'), 'the cleared selection is reported as 未选择');
+
+  // Navigate back in, choose the file by name, and confirm.
+  await filePicker().getByRole('button', { name: 'directory-a', exact: true }).click();
+  await poll(() => filePicker().getByLabel('当前目录').inputValue(), value => normalizePath(value) === normalizePath(sourceA), 'picker returned to the file directory');
+  await filePicker().getByRole('button', { name: 'important.txt', exact: true }).click();
+  assert.equal(await pickerDisabled(), false, 'clicking a regular file enables confirm');
+  await filePicker().getByRole('button', { name: '选择此文件' }).click();
+  await page.getByRole('dialog').filter({ hasText: '选择源文件' }).waitFor({ state: 'hidden' });
+  const confirmedSource = dialog().getByRole('textbox', { name: /^源文件/ });
+  assert.equal(normalizePath(await confirmedSource.inputValue()), normalizePath(singleFilePath), 'confirming writes the full file path back into the editor');
+
+  // Reopening preselects it again; refreshing the listing must drop the selection.
+  await dialog().getByRole('button', { name: '浏览源文件' }).click();
+  await filePicker().getByRole('heading', { name: '选择源文件' }).waitFor();
+  assert.equal(await pickerDisabled(), false, 'reopening preselects the current file');
+  await filePicker().getByRole('button', { name: '刷新目录' }).click();
+  await poll(pickerDisabled, disabled => disabled, 'refresh clears the stale selection');
+  assert.ok((await filePicker().locator('.picker-selected').innerText()).includes('未选择'), 'a refresh clears even a valid preselection');
+  await filePicker().getByRole('button', { name: '取消' }).click();
+  await page.getByRole('dialog').filter({ hasText: '选择源文件' }).waitFor({ state: 'hidden' });
+
+  // Save the edited single-file task through the browser, then run it for real:
+  // the picker path must round-trip through the API and a manual run must produce
+  // a downloadable archive from that one file.
+  await dialog().getByRole('button', { name: '保存任务' }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  const savedFileJobs = await poll(() => api('/jobs'), jobs => jobs.some(job => job.name === 'Report File' && normalizePath(job.sourcePath) === normalizePath(singleFilePath)), 'file source saved through the browser');
+  const fileJob = savedFileJobs.find(job => job.name === 'Report File' && normalizePath(job.sourcePath) === normalizePath(singleFilePath));
+  assert.ok(fileJob, 'the saved single-file task is present after the browser save');
+  assert.equal(fileJob.type, 'file', 'the saved task keeps the single-file type');
+  const fileRow = () => page.locator('.jobs-table tbody tr').filter({ hasText: 'Report File' });
+  await fileRow().getByRole('button', { name: '立即备份' }).click();
+  await dialog().waitFor();
+  const fileRuns = await poll(() => api('/runs'), runs => runs.items.some(run => run.jobId === fileJob.id && run.status === 'succeeded'), 'single-file run succeeded', 120000);
+  assert.equal(fileRuns.items.find(run => run.jobId === fileJob.id).status, 'succeeded', 'the single-file backup reports success');
+  await dialog().getByRole('button', { name: '刷新记录' }).click();
+  await screenshot('desktop-file-run');
+  const fileDownloadPromise = page.waitForEvent('download');
+  await dialog().getByRole('link', { name: '下载归档' }).click();
+  const fileDownload = await fileDownloadPromise;
+  assert.ok(fileDownload.suggestedFilename().endsWith('.7z'), 'the single-file archive downloads with the 7z extension');
+  assert.ok((await readFile(await fileDownload.path())).length > 0, 'the single-file archive is not empty');
+  assert.equal(await fileDownload.failure(), null, 'the single-file download completes cleanly');
+  await closeDialog();
+
+  // ---- Cloning a task creates a paused copy with preserved secrets ----
+  const cloneSource = (await api('/jobs')).find(job => job.name === 'Directory A');
+  assert.ok(cloneSource, 'the Directory A source task exists for cloning');
+  const jobsBeforeClone = (await api('/jobs')).length;
+  await directoryRow().getByRole('button', { name: '复制任务 Directory A', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '已复制为' }).waitFor();
+  const cloned = await poll(() => api('/jobs'), list => list.length === jobsBeforeClone + 1, 'clone created one task');
+  const clone = cloned.find(job => job.id !== cloneSource.id && job.name !== 'Directory A' && job.sourcePath === cloneSource.sourcePath);
+  assert.ok(clone, 'the cloned task exists alongside the source');
+  assert.equal(clone.enabled, false, 'the clone is created paused');
+  assert.equal(clone.archive.passwordSet, true, 'the clone preserves the encrypted archive password');
+  assert.deepEqual(clone.watch, cloneSource.watch, 'the clone keeps the watch configuration');
+  await page.getByRole('dialog').waitFor();
+  assert.equal(await dialog().getByText('系统状态、加密密钥、rclone 配置', { exact: true }).count(), 0, 'a cloned directory editor never describes a system-configuration backup');
+  await screenshot('desktop-job-clone');
+  // Saving the paused clone without re-typing the password must retain the secret.
+  await dialog().getByRole('button', { name: '压缩与保留', exact: true }).click();
+  assert.equal(await dialog().getByLabel('压缩包密码').inputValue(), '', 'the clone never exposes the retained password in the editor');
+  assert.equal(await dialog().getByLabel('AES-256 密码加密').isChecked(), true, 'the cloned task keeps encryption enabled');
+  await dialog().getByRole('button', { name: '保存任务' }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  const savedClone = (await api('/jobs')).find(job => job.id === clone.id);
+  assert.equal(savedClone.archive.passwordSet, true, 'saving the clone without the password keeps the secret configured');
+  assert.equal(savedClone.enabled, false, 'the saved clone stays paused');
+  assert.deepEqual(savedClone.watch, cloneSource.watch, 'the saved clone keeps the watch configuration');
+
+  // A failed clone POST must surface an error and add no phantom task or row.
+  const jobsBeforeFailedClone = (await api('/jobs')).length;
+  const rowsBeforeFailedClone = await page.locator('.jobs-table tbody tr').count();
+  expectedHttpErrors += 1;
+  const failClone = url => /\/api\/jobs\/[^/]+\/clone$/.test(url.pathname);
+  const failCloneHandler = route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: '模拟复制失败' } }) });
+  await page.route(failClone, failCloneHandler);
+  await directoryRow().getByRole('button', { name: '复制任务 Directory A', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '模拟复制失败' }).waitFor();
+  await pause(500);
+  assert.equal((await api('/jobs')).length, jobsBeforeFailedClone, 'a failed clone creates no phantom task');
+  assert.equal(await page.locator('.jobs-table tbody tr').count(), rowsBeforeFailedClone, 'a failed clone adds no phantom row');
+  assert.equal(await page.getByRole('dialog').count(), 0, 'a failed clone opens no phantom editor');
+  await screenshot('desktop-job-clone-failure');
+  await page.unroute(failClone, failCloneHandler);
+  expectedHttpErrors -= 1;
+
+  // The built-in system task is never offered clone/delete actions.
+  const systemRow = page.locator('.jobs-table tbody tr').filter({ hasText: '系统配置' });
+  await systemRow.waitFor();
+  assert.equal(await systemRow.getByRole('button', { name: /复制任务/ }).count(), 0, 'the built-in system task is never offered a clone button');
+  assert.equal(await systemRow.getByRole('button', { name: '删除任务' }).count(), 0, 'the built-in system task is never offered a delete button');
+
   // ---- Site inventory: real CRUD, many-to-many links, filtering and reverse detail ----
   await page.setViewportSize({ width: 1440, height: 1000 });
   await navigate('sites');
@@ -596,7 +721,12 @@ try {
   const siteTagInput = dialog().getByLabel('添加站点标签');
   await siteTagInput.fill('prod');
   await siteTagInput.press('Enter');
-  await dialog().locator('.site-job-option').filter({ hasText: 'Directory A' }).getByRole('checkbox').check();
+  await dialog().getByRole('button', { name: '添加仓库' }).click();
+  await dialog().getByLabel('仓库地址 1').fill('https://github.com/owner/primary');
+  await dialog().getByRole('button', { name: '添加仓库' }).click();
+  await dialog().getByLabel('仓库地址 2').fill('https://github.com/owner/primary-mirror');
+  await dialog().getByLabel('站点备注').fill('主站，变更需通知运维');
+  await dialog().locator('.site-job-option').filter({ has: page.getByText('Directory A', { exact: true }) }).getByRole('checkbox').check();
   await screenshot('desktop-site-editor');
   await dialog().getByRole('button', { name: '创建站点' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
@@ -613,14 +743,24 @@ try {
   const siteRow = name => page.locator('.site-row').filter({ hasText: name }).first();
   await siteRow('官网').waitFor();
   assert.equal(await siteRow('官网').locator('.site-name').innerText(), '官网');
-  assert.ok((await siteRow('官网').locator('.site-domain').allInnerTexts()).some(text => text.includes('example.com')), 'domain is visible in the row');
+  // The list shows exactly one address link: the first saved address rendered as its
+  // hostname, with the complete safe href retained.
+  assert.equal(await siteRow('官网').locator('.site-domain').count(), 1, 'only the first address is listed');
+  assert.equal(await siteRow('官网').locator('.site-domain.site-host').innerText(), 'example.com', 'the first address is shown as its hostname');
+  assert.equal(await siteRow('官网').locator('.site-domain.site-host').getAttribute('href'), 'https://example.com/', 'the address link keeps the complete href');
+  const repoLabels = await siteRow('官网').locator('.site-repo-label').allInnerTexts();
+  assert.equal(repoLabels.length, 2, 'both same-provider repositories are listed');
+  assert.deepEqual(await siteRow('官网').locator('.site-repo').evaluateAll(nodes => nodes.map(node => node.getAttribute('href'))), ['https://github.com/owner/primary', 'https://github.com/owner/primary-mirror'], 'repository links keep their full href');
+  const repoAria = await siteRow('官网').locator('.site-repo').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label') ?? ''));
+  assert.ok(repoAria.length === 2 && repoAria.every((label, index) => label.toLowerCase().includes('github') && label.includes(index === 0 ? 'primary' : 'primary-mirror')), `each repository link is labelled for accessibility with its provider and name (${repoAria.join(' | ')})`);
+  assert.equal((await siteRow('官网').locator('.site-note').innerText()).includes('主站，变更需通知运维'), true, 'the note preview is visible');
   assert.ok((await siteRow('官网').locator('.site-job-name').allInnerTexts()).includes('Directory A'), 'linked task name is visible in the row');
   await screenshot('desktop-sites');
 
   // A second site shares the same task (many-to-many, no ownership transfer).
   await page.getByRole('button', { name: '新增站点', exact: true }).first().click();
   await dialog().getByLabel('站点名称', { exact: true }).fill('共享站点');
-  await dialog().locator('.site-job-option').filter({ hasText: 'Directory A' }).getByRole('checkbox').check();
+  await dialog().locator('.site-job-option').filter({ has: page.getByText('Directory A', { exact: true }) }).getByRole('checkbox').check();
   await dialog().getByRole('button', { name: '创建站点' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   sites = await poll(() => api('/sites'), list => list.filter(site => site.backupJobIds.includes(directoryA.id)).length === 2, 'shared task linked to two sites');
@@ -646,7 +786,7 @@ try {
 
   // Reverse mapping: the task detail shows every site currently linked to it.
   await navigate('jobs');
-  await page.locator('.jobs-table tbody tr').filter({ hasText: 'Directory A' }).locator('.job-primary').click();
+  await directoryRow().locator('.job-primary').click();
   await dialog().getByText('关联站点', { exact: true }).waitFor();
   const siteChips = new Set(await dialog().locator('.site-links .tag-chip').allInnerTexts());
   assert.deepEqual(siteChips, new Set(['官网', '共享站点']), 'job detail lists both linked sites');
@@ -668,6 +808,10 @@ try {
   const siteSearch = page.getByRole('textbox', { name: '搜索站点' });
   await siteSearch.fill('portal.example.com');
   await poll(() => page.locator('.site-row').count(), count => count === 1, 'domain search filters to one site');
+  await siteSearch.fill('owner/primary-mirror');
+  await poll(() => page.locator('.site-row').count(), count => count === 1, 'repository search filters to one site');
+  await siteSearch.fill('变更需通知运维');
+  await poll(() => page.locator('.site-row').count(), count => count === 1, 'notes search filters to one site');
   await siteSearch.fill('no-such-site');
   await page.getByRole('heading', { name: '没有匹配的站点' }).waitFor();
   await screenshot('desktop-sites-no-match');
@@ -727,8 +871,41 @@ try {
   await pause(400);
   await siteRow('官网').waitFor();
   assert.equal(await page.getByRole('heading', { name: '尚无站点' }).count(), 0, 'a failed refresh never replaces loaded sites with an empty state');
+  // While /overview is unavailable the overview stats must say so instead of
+  // claiming a false "0 / 队列空闲". Navigating triggers another failed fetch,
+  // still inside the expected-error window.
+  await navigate('overview');
+  await page.locator('.stats .stat').first().waitFor();
+  await page.locator('.overview-site-list .site-row').first().waitFor();
+  const unavailableStats = await page.locator('.stats').innerText();
+  assert.ok(unavailableStats.includes('概览数据暂时不可用'), 'an unavailable overview renders unavailable stats');
+  assert.ok(!unavailableStats.includes('队列空闲'), 'an unavailable overview never claims the queue is idle');
+  assert.equal(await page.getByRole('heading', { name: '尚无站点' }).count(), 0, 'a failed /overview never renders the empty site state on the overview page');
+  await screenshot('desktop-overview-stats-unavailable');
   await page.unroute(failOverview, failOverviewHandler);
   expectedHttpErrors -= 1;
+
+  // N1b: a *pending* /overview (request held open) must not block the site panel
+  // or freeze the overview into a false idle/zero state.
+  const pendOverview = url => url.pathname === '/api/overview';
+  const pendRoutes = [];
+  const pendOverviewHandler = route => { pendRoutes.push(route); };
+  await page.route(pendOverview, pendOverviewHandler);
+  await page.reload();
+  await page.locator('.main-content h1').waitFor();
+  await page.locator('.main-content .site-row').first().waitFor();
+  assert.ok(await page.locator('.site-row').count() >= 2, 'saved sites load while /overview is still pending');
+  assert.equal(await page.getByRole('heading', { name: '尚无站点' }).count(), 0, 'a pending /overview never renders the empty-success site state');
+  const pendingStats = await page.locator('.stats').innerText();
+  assert.ok(pendingStats.includes('正在读取概览…'), 'a genuinely pending /overview renders its loading state');
+  assert.ok(!pendingStats.includes('概览数据暂时不可用'), 'a pending request is distinct from a failed overview read');
+  assert.ok(!pendingStats.includes('队列空闲'), 'a pending /overview never claims the queue is idle');
+  await screenshot('desktop-overview-pending');
+  for (const route of pendRoutes) { try { await route.continue(); } catch { /* request already resolved */ } }
+  pendRoutes.length = 0;
+  await page.unroute(pendOverview, pendOverviewHandler);
+  // Restore the sites page before the following /jobs-failure scenario.
+  await navigate('sites');
 
   // N3 regression: /jobs fails while /sites succeeds. Existing associations must be
   // reported as pending (not 0, not deleted), and the editor must not silently drop them.
@@ -739,10 +916,11 @@ try {
   await page.reload();
   await page.locator('.main-content h1').waitFor();
   await siteRow('官网').waitFor();
-  assert.ok((await siteRow('官网').locator('.site-meta').innerText()).includes('1 个关联任务'), 'an unloadable task list never drops the stored link count to 0');
   const pendingLink = siteRow('官网').locator('.site-job.pending');
   await pendingLink.waitFor();
-  assert.ok((await pendingLink.innerText()).includes('任务信息待加载'), 'the unresolved association is reported as pending, not missing');
+  const pendingText = await pendingLink.innerText();
+  assert.ok(pendingText.includes('任务信息待加载'), 'the unresolved association is reported as pending, not missing');
+  assert.ok(pendingText.includes('（1）'), `the pending association keeps the stored link count of 1, never 0 (got "${pendingText}")`);
   assert.equal(await siteRow('官网').getByText('未关联备份任务').count(), 0, 'a stored association is never shown as unlinked');
   assert.equal(await page.getByText('已被删除').count(), 0, 'an unknown association is never reported as deleted');
   await screenshot('desktop-sites-jobs-unavailable');
@@ -770,10 +948,60 @@ try {
   assert.equal(await page.getByText('任务信息待加载').count(), 0, 'a successful task reload replaces the pending indicator');
   expectedHttpErrors -= 1;
 
+  // N4: the task list is an independent resource. A /jobs failure must never look like
+  // an empty task list, and a transient failure after a good load must keep the last-good
+  // list visible with a failure + retry instead of a permanent loading line.
+  const failJobsOnce = url => url.pathname === '/api/jobs';
+  const failJobsOnceHandler = route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: '模拟任务失败' } }) });
+  const jobsTableRow = name => page.locator('.jobs-table tbody tr').filter({ has: page.getByText(name, { exact: true }) });
+  // (a) initial failure: an explicit error with retry, never the empty-success state.
+  expectedHttpErrors += 1;
+  await page.route(failJobsOnce, failJobsOnceHandler);
+  await navigate('jobs');
+  // A same-document hash change keeps the already-loaded last-good list in memory, so
+  // force a genuine first load: reload with the route installed and no cached jobs, to
+  // prove the *initial* failure path (not the retained-list path).
+  await page.reload();
+  const jobsUnavailable = page.getByRole('alert').filter({ hasText: '任务列表尚未成功加载' });
+  await jobsUnavailable.waitFor();
+  assert.equal(await page.getByRole('heading', { name: '尚无备份任务' }).count(), 0, 'an initial /jobs failure never renders the empty-success task list');
+  assert.equal(await page.getByText('正在读取备份数据…').count(), 0, 'an initial /jobs failure never leaves an indefinite loading line');
+  assert.ok(await jobsUnavailable.getByRole('button', { name: '重新读取' }).count() >= 1, 'the initial /jobs failure offers a retry control');
+  await screenshot('desktop-jobs-initial-failure');
+  // (b) recovery: the retry re-reads the real task list.
+  await page.unroute(failJobsOnce, failJobsOnceHandler);
+  await jobsUnavailable.getByRole('button', { name: '重新读取' }).click();
+  await jobsTableRow('Directory A').waitFor();
+  assert.equal(await page.getByRole('alert').filter({ hasText: '任务列表尚未成功加载' }).count(), 0, 'retrying after an initial failure restores the task list');
+  expectedHttpErrors -= 1;
+
+  // (c) a transient failure after a good load keeps the last-good rows, not a blank page.
+  const jobsBeforeTransient = await page.locator('.jobs-table tbody tr').count();
+  assert.ok(jobsBeforeTransient > 0, 'the task list is populated before the transient failure');
+  expectedHttpErrors += 1;
+  await page.route(failJobsOnce, failJobsOnceHandler);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  const transientJobsAlert = page.getByRole('alert').filter({ hasText: '模拟任务失败' });
+  await transientJobsAlert.waitFor();
+  assert.equal(await page.locator('.jobs-table tbody tr').count(), jobsBeforeTransient, 'a transient /jobs failure keeps every last-good task row');
+  await jobsTableRow('Directory A').waitFor();
+  assert.equal(await page.getByRole('heading', { name: '尚无备份任务' }).count(), 0, 'a transient /jobs failure never renders the empty-success state');
+  assert.equal(await page.getByText('正在读取备份数据…').count(), 0, 'a transient /jobs failure never leaves a permanent loading line');
+  await poll(() => page.getByRole('button', { name: '刷新', exact: true }).isEnabled(), enabled => enabled, 'retry control re-enabled after the transient failure');
+  await screenshot('desktop-jobs-transient-failure');
+  // (d) recovery: a clean refresh clears the failure without dropping the rows.
+  await page.unroute(failJobsOnce, failJobsOnceHandler);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await poll(() => page.getByRole('alert').filter({ hasText: '模拟任务失败' }).count(), count => count === 0, 'transient jobs failure cleared');
+  await jobsTableRow('Directory A').waitFor();
+  assert.equal(await page.locator('.jobs-table tbody tr').count(), jobsBeforeTransient, 'the recovered task list keeps every row');
+  expectedHttpErrors -= 1;
+  await navigate('sites');
+
   // Unbinding one site keeps the task and the other site's link; deleting a site
   // keeps the task, its credentials and the other site's links.
   await siteRow('官网').getByRole('button', { name: '编辑站点' }).click();
-  await dialog().locator('.site-job-option').filter({ hasText: 'Directory A' }).getByRole('checkbox').uncheck();
+  await dialog().locator('.site-job-option').filter({ has: page.getByText('Directory A', { exact: true }) }).getByRole('checkbox').uncheck();
   await dialog().getByRole('button', { name: '保存站点' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await poll(() => api('/sites'), list => list.find(site => site.name === '官网')?.backupJobIds.length === 0, 'site unlinked');
@@ -801,8 +1029,12 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   assert.deepEqual(errors, [], 'Browser errors');
-  await writeFile(path.join(screenshotDir, 'verification.json'), JSON.stringify({ screenshots: evidence, browserErrors: errors, backups: 3, mailMessages: messages.length, checkedAt: new Date().toISOString() }, null, 2));
-  console.log(`Browser check passed: ${evidence.length} screenshots, 3 real encrypted backups including a watched change, download, SMTP, login, responsive layouts. Artifacts: ${screenshotDir}`);
+  // Derive the completed-backup count from the authoritative run history instead of
+  // hardcoding it, so adding a real run (for example the single-file backup) cannot
+  // leave verification.json claiming a stale number.
+  const completedBackups = (await api('/runs?limit=200')).items.filter((run) => run.status === 'succeeded').length;
+  await writeFile(path.join(screenshotDir, 'verification.json'), JSON.stringify({ screenshots: evidence, browserErrors: errors, backups: completedBackups, mailMessages: messages.length, checkedAt: new Date().toISOString() }, null, 2));
+  console.log(`Browser check passed: ${evidence.length} screenshots, ${completedBackups} real encrypted backups including a watched change, download, SMTP, login, responsive layouts. Artifacts: ${screenshotDir}`);
 } catch (error) {
   if (page) {
     await page.screenshot({ path: path.join(screenshotDir, 'failure.png'), fullPage: true });

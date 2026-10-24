@@ -22,6 +22,7 @@ import { createApp } from '../server/app.mjs';
 import { createRcloneService } from '../server/rclone.mjs';
 import { createBackupService } from '../server/backup.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from '../server/system-restore.mjs';
+import { siteDomainHostname, siteRepositoryLink, siteRepositoryProvider, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT } from '../shared/contracts.mjs';
 
 const rcloneBinary = process.env.RCLONE_BINARY || (process.platform === 'win32' ? path.resolve('.artifacts/tools/rclone-v1.75.1-windows-amd64/rclone.exe') : 'rclone');
 const sevenZipBinary = process.env.SEVEN_ZIP_BINARY || (process.platform === 'win32' ? path.resolve('.artifacts/tools/7zip/x64/7za.exe') : '7z');
@@ -105,7 +106,14 @@ async function fixture({ init, session: seedSession = '', csrfToken: seedCsrf = 
   await boot();
   return {
     folder, config, request, boot, shutdown,
-    setup: () => request('/api/auth/setup', { method: 'POST', body: { username: 'admin', password: 'a-strong-admin-password' } }),
+    setup: async () => {
+      const response = await request('/api/auth/setup', { method: 'POST', body: { username: 'admin', password: 'a-strong-admin-password' } });
+      // Surface a failed bootstrap (for example an OOM while hashing the password)
+      // here instead of letting it masquerade as a later 401 on an authenticated route.
+      assert.equal(response.status, 201, `auth setup must succeed before authenticated requests: ${response.status} ${JSON.stringify(response.data)}`);
+      assert.ok(response.data?.csrfToken, `auth setup must issue a CSRF token: ${JSON.stringify(response.data)}`);
+      return response;
+    },
     get store() { return current?.store; },
     get runtime() { return current?.runtime; },
     get session() { return session; },
@@ -282,6 +290,178 @@ test('safe URL fragments are preserved instead of being rejected', async (t) => 
   const saved = asUrl(response.data.domains[0], 'fragment domain');
   assert.equal(saved.pathname, '/guide');
   assert.equal(saved.hash, '#install', 'the safe fragment is preserved');
+});
+
+test('site repositories keep validated order, provider and exact href while notes stay literal text', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const site = await createSite(context, {
+    name: 'Repo Site',
+    domains: ['repo.example.com', 'https://portal.repo.example.com:8443/admin'],
+    tags: ['prod'],
+    repositoryUrls: [
+      'https://github.com/Example/Deep/Repo.git?tab=readme#top',
+      'gitcode.com/Example/Repo',
+      'gitee.com/Example/Repo',
+      'gitee.com/Example/Repo',
+      'https://hub.gitcode.com/Mirror/Repo',
+    ],
+    notes: '  first line\nsecond line  ',
+  });
+  assert.deepEqual(site.repositoryUrls, [
+    'https://github.com/Example/Deep/Repo.git?tab=readme#top',
+    'https://gitcode.com/Example/Repo',
+    'https://gitee.com/Example/Repo',
+    'https://hub.gitcode.com/Mirror/Repo',
+  ], 'canonical duplicates collapse in first order');
+  assert.equal(site.notes, 'first line\nsecond line', 'notes are trimmed but keep internal newlines');
+
+  const first = siteRepositoryLink(site.repositoryUrls[0]);
+  assert.equal(first.provider, 'github');
+  assert.equal(first.href, 'https://github.com/Example/Deep/Repo.git?tab=readme#top', 'exact canonical href is preserved');
+  assert.equal(new URL(first.href).pathname, '/Example/Deep/Repo.git', 'case and deep path survive; the path is never cut to two segments');
+  assert.equal(new URL(first.href).hash, '#top');
+  assert.equal(first.label, 'Example/Deep/Repo.git', 'the repository label is the distinguishable owner/path');
+  assert.equal(siteRepositoryProvider('https://hub.gitcode.com/Mirror/Repo'), 'gitcode', 'hub.gitcode.com resolves to gitcode');
+  assert.equal(siteRepositoryProvider('https://gitlab.com/owner/repo'), null, 'an unknown provider host never resolves');
+  assert.equal(siteDomainHostname(site.domains[1]), 'portal.repo.example.com', 'the list hostname projection drops scheme, nondefault port and path');
+
+  // Repository/notes metadata (not associations) lives in the site JSON blob.
+  const raw = new DatabaseSync(path.join(context.config.dataDir, 'state.sqlite'), { readOnly: true });
+  try {
+    const row = raw.prepare('SELECT data FROM sites WHERE id=?').get(site.id);
+    const stored = JSON.parse(row.data);
+    assert.deepEqual(stored.repositoryUrls, site.repositoryUrls, 'repositories persist in sites.data in exact order');
+    assert.equal(stored.notes, 'first line\nsecond line');
+    assert.equal(Object.prototype.hasOwnProperty.call(stored, 'backupJobIds'), false, 'association ids are still not duplicated into site JSON');
+  } finally { raw.close(); }
+  assert.deepEqual(foreignKeyViolations(path.join(context.config.dataDir, 'state.sqlite')), []);
+});
+
+test('site repositories reject unsupported, deceptive, credential and malformed values without writes', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const bad = async (value, label) => {
+    const repositoryUrls = Array.isArray(value) ? value : [value];
+    const response = await context.request('/api/sites', { method: 'POST', body: siteInput({ name: 'Bad repo', repositoryUrls }) });
+    assert.equal(response.status, 400, `${label}: expected 400, got ${response.status} ${JSON.stringify(response.data)}`);
+    assert.ok(response.data?.error?.code, `${label}: error carries a stable code`);
+  };
+  await bad('https://gitlab.com/owner/repo', 'unsupported host');
+  await bad('https://github.com.evil.example/owner/repo', 'deceptive suffix host');
+  await bad('https://evilgithub.com/owner/repo', 'deceptive prefix host');
+  await bad('https://user:pass@github.com/owner/repo', 'embedded credentials');
+  await bad('ftp://github.com/owner/repo', 'unsupported scheme');
+  await bad('javascript:alert(1)', 'javascript scheme');
+  await bad('https://github.com/owner', 'missing repository path');
+  await bad('https://github.com/owner' + String.fromCharCode(92) + '/repo', 'backslash path');
+  await bad('https://github.com/owner repo', 'embedded space');
+  await bad('https://github.com:8443/owner/repo', 'nondefault port');
+  await bad('', 'blank entry');
+  await bad(Array.from({ length: SITE_REPOSITORY_LIMIT + 1 }, (_, index) => `https://github.com/owner/repo${index}`), 'more than the repository limit');
+  await bad(`https://github.com/${'a'.repeat(2050)}/repo`, 'longer than 2048 characters');
+  await bad(123, 'non-string entry');
+  await bad(null, 'null entry');
+  assert.deepEqual((await context.request('/api/sites')).data, [], 'no rejected repository create left a record behind');
+});
+
+test('site notes trim, keep internal newlines, cap length and reject wrong types', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const trimmed = await createSite(context, { name: 'Notes', notes: '  line one\nline two  ' });
+  assert.equal(trimmed.notes, 'line one\nline two', 'ends are trimmed and internal newlines survive');
+  const literal = await createSite(context, { name: 'Literal', notes: '<script>alert(1)</script> & <b>x</b>' });
+  assert.equal(literal.notes, '<script>alert(1)</script> & <b>x</b>', 'notes are stored as literal text, never interpreted');
+  const blank = await createSite(context, { name: 'Blank', notes: '   ' });
+  assert.equal(blank.notes, '', 'whitespace-only notes normalize to the empty value');
+  const max = await createSite(context, { name: 'Max', notes: 'x'.repeat(SITE_NOTES_MAX_LENGTH) });
+  assert.equal(max.notes.length, SITE_NOTES_MAX_LENGTH, 'the full 500-character note is accepted');
+  const tooLong = await context.request('/api/sites', { method: 'POST', body: siteInput({ name: 'Too long', notes: 'x'.repeat(SITE_NOTES_MAX_LENGTH + 1) }) });
+  assert.equal(tooLong.status, 400, 'a note over the limit is rejected');
+  for (const value of [null, 12, { a: 1 }, ['x']]) {
+    const response = await context.request('/api/sites', { method: 'POST', body: siteInput({ name: 'Wrong type', notes: value }) });
+    assert.equal(response.status, 400, `notes ${JSON.stringify(value)} is rejected rather than coerced`);
+  }
+});
+
+test('PATCH clears repositories and notes independently without touching domains, tags or links', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const job = await createJob(context, { name: 'Patch target' });
+  const site = await createSite(context, {
+    name: 'Independence',
+    domains: ['one.example.com', 'https://two.example.com/Path'],
+    tags: ['prod'],
+    repositoryUrls: ['https://github.com/owner/one', 'https://gitee.com/owner/two'],
+    notes: 'keep me',
+    backupJobIds: [job.id],
+  });
+
+  const renamed = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { name: 'Renamed' } });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.data));
+  assert.deepEqual(renamed.data.repositoryUrls, site.repositoryUrls, 'omitted repositories are retained');
+  assert.equal(renamed.data.notes, 'keep me', 'omitted notes are retained');
+
+  const noNotes = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { notes: '' } });
+  assert.equal(noNotes.data.notes, '', 'an empty string clears notes');
+  assert.deepEqual(noNotes.data.repositoryUrls, site.repositoryUrls, 'clearing notes keeps repositories');
+  assert.deepEqual(noNotes.data.domains, site.domains, 'clearing notes keeps every saved address');
+  assert.deepEqual(noNotes.data.backupJobIds, [job.id], 'clearing notes keeps associations');
+
+  const replaced = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://cnb.cool/owner/three', 'https://github.com/owner/one'] } });
+  assert.deepEqual(replaced.data.repositoryUrls, ['https://cnb.cool/owner/three', 'https://github.com/owner/one'], 'a supplied repository array replaces the set in order');
+  assert.equal(replaced.data.notes, '', 'a repository edit never resurrects cleared notes');
+  assert.deepEqual(replaced.data.domains, site.domains, 'repository replacement never changes saved addresses');
+
+  const cleared = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: [] } });
+  assert.deepEqual(cleared.data.repositoryUrls, [], 'an empty array clears repositories');
+  assert.equal(cleared.data.notes, '');
+  assert.deepEqual(cleared.data.backupJobIds, [job.id]);
+
+  const before = (await context.request(`/api/sites/${site.id}`)).data;
+  const rejected = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://evil.example/owner/repo'], notes: 'should not apply' } });
+  assert.equal(rejected.status, 400, 'an invalid repository write is rejected');
+  const after = (await context.request(`/api/sites/${site.id}`)).data;
+  assert.deepEqual(after, before, 'a rejected repository write leaves metadata, timestamps and links intact');
+});
+
+test('legacy site rows without repository/notes fields read as empty defaults and stay editable', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const job = await createJob(context, { name: 'Legacy job' });
+  const site = await createSite(context, { name: 'Legacy', domains: ['legacy.example.com'], tags: ['prod'], repositoryUrls: ['https://github.com/owner/repo'], notes: 'old note', backupJobIds: [job.id] });
+  await context.shutdown();
+
+  // Emulate a record written before the extension: the site row exists, but the
+  // new metadata keys are absent from the stored JSON.
+  const statePath = path.join(context.config.dataDir, 'state.sqlite');
+  const db = new DatabaseSync(statePath);
+  try {
+    const row = db.prepare('SELECT data FROM sites WHERE id=?').get(site.id);
+    const stored = JSON.parse(row.data);
+    delete stored.repositoryUrls;
+    delete stored.notes;
+    db.prepare('UPDATE sites SET data=? WHERE id=?').run(JSON.stringify(stored), site.id);
+  } finally { db.close(); }
+  await context.boot();
+
+  const read = (await context.request(`/api/sites/${site.id}`)).data;
+  assert.deepEqual(read.repositoryUrls, [], 'a legacy record defaults repositories to [] independently of the schema');
+  assert.equal(read.notes, '', 'a legacy record defaults notes to the empty value');
+  assert.deepEqual(read.domains, ['https://legacy.example.com/'], 'legacy addresses are unchanged');
+  assert.deepEqual(read.backupJobIds, [job.id], 'legacy associations are unchanged');
+
+  const patched = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://github.com/owner/new'], notes: 'added' } });
+  assert.equal(patched.status, 200, JSON.stringify(patched.data));
+  assert.deepEqual(patched.data.repositoryUrls, ['https://github.com/owner/new']);
+  assert.equal(patched.data.notes, 'added');
+  assert.deepEqual(patched.data.backupJobIds, [job.id]);
+  assert.deepEqual(foreignKeyViolations(statePath), []);
 });
 
 test('PATCH merges omitted fields, replaces supplied arrays and keeps tags independent', async (t) => {
@@ -461,8 +641,8 @@ test('a current system snapshot restored through the real restore path keeps sit
   await context.setup();
   const jobA = await createJob(context, { name: 'Restored DB' });
   const jobB = await createJob(context, { name: 'Restored Files', sourcePath: path.join(context.config.sourceRoots[0], 'directory-b') });
-  const siteOne = await createSite(context, { name: 'Restored Site One', domains: ['one.example.com', 'https://two.example.com/Path'], tags: ['prod', 'web'], backupJobIds: [jobA.id, jobB.id] });
-  const siteTwo = await createSite(context, { name: 'Restored Site Two', domains: [], tags: ['prod'], backupJobIds: [jobA.id] });
+  const siteOne = await createSite(context, { name: 'Restored Site One', domains: ['one.example.com', 'https://two.example.com/Path'], tags: ['prod', 'web'], repositoryUrls: ['https://github.com/owner/one.git', 'https://gitee.com/owner/mirror?tab=readme'], notes: 'restore note\nline two', backupJobIds: [jobA.id, jobB.id] });
+  const siteTwo = await createSite(context, { name: 'Restored Site Two', domains: [], tags: ['prod'], repositoryUrls: ['https://hub.gitcode.com/owner/deep/repo'], notes: '', backupJobIds: [jobA.id] });
   const savedSites = (await context.request('/api/sites')).data;
 
   const statePath = await snapshotState(context.config, path.join(target.folder, 'snapshot', 'state.sqlite'));
@@ -555,7 +735,7 @@ test('a site inventory survives a real system-configuration backup export and st
   try {
     // Seed the state that has to travel inside the system archive.
     const directoryJob = store.saveJob(inputJob(config, { name: 'Exported directory' }));
-    const exportedSite = store.saveSite({ name: 'Exported site', domains: ['exported.example.com', 'https://portal.exported.example.com/app'], tags: ['prod', 'edge'], backupJobIds: [directoryJob.id] });
+    const exportedSite = store.saveSite({ name: 'Exported site', domains: ['exported.example.com', 'https://portal.exported.example.com:8443/app?x=1#frag'], tags: ['prod', 'edge'], repositoryUrls: ['https://github.com/owner/exported.git', 'gitcode.com/owner/mirror'], notes: 'exported note\nsecond line', backupJobIds: [directoryJob.id] });
     const systemJob = store.saveJob({ name: '系统配置', type: 'system', enabled: true, destinations: [{ remote: 'test', path: 'system' }], archive: { format: '7z', encrypted: true, password: 'system-export-password' }, retry: { attempts: 1, delaySeconds: 1 } });
 
     const run = await waitForRun(store, service.enqueue(systemJob.id).id);

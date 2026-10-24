@@ -239,6 +239,15 @@ export function createBackupService({ store, config, rclone, runTool = runProces
     await validateTree(resolved, signal, resolved, excludes);
     await runTool(config.tarBinary ?? 'tar', ['-cf', output, ...excludes.map((value) => `--exclude=${value}`), '-C', resolved, '.'], { signal, secrets, onLine: (line) => log(runId, line, 'info', secrets) });
   }
+  // File tasks archive exactly one selected regular file under its basename, never the containing directory.
+  async function tarFile(source, output, signal, secrets, runId) {
+    // Revalidate at preparation time so a path that changed since preflight cannot redirect or widen the archive.
+    const resolved = await resolveSourcePath(config, source, { file: true });
+    if (!(await lstat(resolved)).isFile()) throw new Error('Backup source is not a regular file');
+    const name = path.basename(resolved);
+    // `./<basename>` cannot be read as an option, and -C keeps siblings out of the archive. A 0-byte file is valid.
+    await runTool(config.tarBinary ?? 'tar', ['-cf', output, '-C', path.dirname(resolved), `./${name}`], { signal, secrets, onLine: (line) => log(runId, line, 'info', secrets) });
+  }
   async function prepareSystemConfig(payload, signal, runId, backup) {
     const statePath = path.join(payload, 'state.sqlite');
     const database = new DatabaseSync(path.join(config.dataDir, 'state.sqlite'), { readOnly: true, timeout: 10000 });
@@ -501,11 +510,15 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         }).finally(() => { monitoring = false; });
       }, 250);
       monitor.unref();
-      const source = job.type === 'system' ? null : await resolveSourcePath(config, job.type === 'vaultwarden' ? job.vaultwarden.dataDir || job.sourcePath : job.sourcePath, { directory: true });
+      const sourceOptions = job.type === 'file' ? { file: true } : { directory: true };
+      const source = job.type === 'system' ? null : await resolveSourcePath(config, job.type === 'vaultwarden' ? job.vaultwarden.dataDir || job.sourcePath : job.sourcePath, sourceOptions);
       if (source && !path.relative(source, config.tempDir).startsWith('..') && !path.isAbsolute(path.relative(source, config.tempDir))) throw new Error('Temporary storage must be outside the backup source');
       const tracksBaseline = job.type === 'directory' && job.watch?.mode === 'incremental';
       const snapshot = tracksBaseline ? {} : null;
-      let bytes = job.type === 'system' ? (await stat(path.join(config.dataDir, 'state.sqlite'))).size : await validateTree(source, signal, source, job.type === 'directory' ? job.excludes : [], snapshot);
+      let bytes;
+      if (job.type === 'system') bytes = (await stat(path.join(config.dataDir, 'state.sqlite'))).size;
+      else if (job.type === 'file') bytes = (await lstat(source)).size;
+      else bytes = await validateTree(source, signal, source, job.type === 'directory' ? job.excludes : [], snapshot);
       let changes = null, baseline = null;
       if (tracksBaseline && store.getRun(runId).trigger === 'watch') {
         baseline = store.getWatchBaseline(jobId, job.sourcePath);
@@ -558,6 +571,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
           update(runId, { warnings: [...existing, ...prepared.warnings.map((warning) => redact(warning, secrets))] });
         }
       }
+      else if (job.type === 'file') await tarFile(source, path.join(payload, `file.${stamp}.tar`), signal, secrets, runId);
       else if (changes) {
         const packed = new Set(await tarIncremental(source, stage, path.join(payload, `incremental.${stamp}.tar`), [...changes.added, ...changes.modified], signal, secrets, runId));
         const missing = [...changes.added, ...changes.modified].filter((name) => !packed.has(name));

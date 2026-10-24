@@ -164,4 +164,10 @@ test('dirname handles trailing separators, roots and empty values', () => {
   assert.equal(dirname('relative/folder'), 'relative');
   assert.equal(dirname('single'), '');
   assert.equal(dirname(''), '');
+  // Windows drive-root files must keep the root separator: `D:` alone is a
+  // drive-relative path, which the source picker rejects as not absolute.
+  assert.equal(dirname(String.raw`D:\report.pdf`), 'D:\\', 'a Windows drive-root file keeps the backslash root');
+  assert.equal(dirname('D:/report.pdf'), 'D:/', 'a Windows drive-root file keeps the forward-slash root');
+  assert.equal(dirname(String.raw`D:\nested\report.pdf`), 'D:\\nested', 'a nested Windows path drops only the file name');
+  assert.equal(dirname('/report.pdf'), '/', 'a POSIX root file keeps the leading slash');
 });

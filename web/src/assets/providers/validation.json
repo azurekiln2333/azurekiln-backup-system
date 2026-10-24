@@ -1,0 +1,68 @@
+[
+  {
+    "file": "cnb-black.svg",
+    "bytes": 1675,
+    "sha256": "efe10452f21414cfc994d9917067f07acce1b4b40be8eaa28c7f2ed0ef0f5564",
+    "validSvgRoot": true,
+    "viewBox": "0 0 320 320",
+    "safetyFailures": []
+  },
+  {
+    "file": "cnb-color.svg",
+    "bytes": 1685,
+    "sha256": "f1f827404d7a2bc7d720e9517f9282b47d201f9586476b7a26fc14b154c2eb41",
+    "validSvgRoot": true,
+    "viewBox": "0 0 320 320",
+    "safetyFailures": []
+  },
+  {
+    "file": "cnb-white.svg",
+    "bytes": 1675,
+    "sha256": "308de322659501e85004e0b1a7fd6290f78165ed6190c4f3bdf8d05da46cddf8",
+    "validSvgRoot": true,
+    "viewBox": "0 0 320 320",
+    "safetyFailures": []
+  },
+  {
+    "file": "gitcode.png",
+    "bytes": 848,
+    "sha256": "6f8bc08515eed10212146cca348ecc304785add406d54590a82f068503d408d5",
+    "format": "PNG",
+    "dimensions": [
+      96,
+      96
+    ]
+  },
+  {
+    "file": "gitcode.svg",
+    "bytes": 1652,
+    "sha256": "f5663be722ac09e7f3b782a592167c9c0ca81b224d04b7ff7deebb8b7e8906a2",
+    "validSvgRoot": true,
+    "viewBox": "0 0 24 24",
+    "safetyFailures": []
+  },
+  {
+    "file": "gitee.svg",
+    "bytes": 1697,
+    "sha256": "007284ed10da08d196cbcece058229348ba0f8e269096c839a0000fb349ea369",
+    "validSvgRoot": true,
+    "viewBox": "0 0 90 90",
+    "safetyFailures": []
+  },
+  {
+    "file": "github-black.svg",
+    "bytes": 1559,
+    "sha256": "693d7abe6f899646cc2e96856723b45e95f71885a54910b2749f6decdf7e1ee1",
+    "validSvgRoot": true,
+    "viewBox": "0 0 98 96",
+    "safetyFailures": []
+  },
+  {
+    "file": "github-white.svg",
+    "bytes": 1559,
+    "sha256": "ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b",
+    "validSvgRoot": true,
+    "viewBox": "0 0 98 96",
+    "safetyFailures": []
+  }
+]

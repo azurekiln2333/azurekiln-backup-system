@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref, toRaw, watch } from 'vue';
-import { Database, Eye, EyeOff, Folder, FolderOpen, HardDrive, KeyRound, LockKeyhole, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next';
+import { Database, Eye, EyeOff, FileText, Folder, FolderOpen, HardDrive, KeyRound, LockKeyhole, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next';
 import { batchJobSchema, jobSchema, newJob } from '../../../shared/contracts.mjs';
 import type { Job, JobInput, Remote } from '../types';
 import { api, errorMessage, write } from '../api';
 import Modal from './Modal.vue';
 import PathPicker from './PathPicker.vue';
 import NewApiFields from './NewApiFields.vue';
-const props = defineProps<{ job?: Job; jobs?: Job[]; initialType?: 'directory' | 'vaultwarden' | 'newapi'; initialSourcePath?: string }>();
+import { dirname } from '../jobGroups';
+const props = defineProps<{ job?: Job; jobs?: Job[]; initialType?: 'directory' | 'file' | 'vaultwarden' | 'newapi'; initialSourcePath?: string }>();
 const emit = defineEmits<{ close: []; saved: [job: Job]; batchSaved: [jobs: Job[]] }>();
 const form = reactive<JobInput>(structuredClone(props.job ? toRaw(props.job) : newJob(props.initialType ?? 'directory')));
 form.archive.folderTemplate ??= '{datetime}';
@@ -93,7 +94,8 @@ const newapiFieldMap: Record<NewApiPickerKey, 'dataDir' | 'envFilePath' | 'compo
 const newapiPickerFromField = (field: 'dataDir' | 'envFilePath' | 'composeFilePath' | 'serviceFilePath' | 'proxyConfigPath' | 'pluginsPath' | 'logsPath'): NewApiPickerKey => `newapi${field.charAt(0).toUpperCase()}${field.slice(1)}` as NewApiPickerKey;
 const isNewApiPicker = (value: SourcePickerTarget): value is NewApiPickerKey => value in newapiFieldMap;
 function pickerPath(target: SourcePickerTarget) {
-  if (target === 'sourcePath') return form.sourcePath;
+  // File mode opens the containing directory: /sources?path=<file> rejects a file path.
+  if (target === 'sourcePath') return form.type === 'file' ? dirname(form.sourcePath) : form.sourcePath;
   if (isNewApiPicker(target)) return form.newapi[newapiFieldMap[target]];
   return form.vaultwarden[target];
 }
@@ -150,7 +152,8 @@ function showError(message: string, targetTab = tab.value) {
 }
 async function save() {
   error.value = '';
-  form.excludes = excludes.value.split('\n').map(value => value.trim()).filter(Boolean);
+  // Excludes are directory-only; file mode hides the textarea, so stale rules must not reach the shared parse.
+  form.excludes = form.type === 'file' ? [] : excludes.value.split('\n').map(value => value.trim()).filter(Boolean);
   if (tagDraft.value.trim()) addTags();
   const batchMode = batch.value && canBatch.value;
   if (batchMode) {
@@ -162,6 +165,7 @@ async function save() {
   }
   if (!form.name.trim()) { showError('请输入任务名称', 0); return; }
   if (form.type === 'directory' && !form.sourcePath.trim()) { showError('请选择源目录', 0); return; }
+  if (form.type === 'file' && !form.sourcePath.trim()) { showError('请选择要备份的文件', 0); return; }
   if (form.type === 'vaultwarden' && !form.vaultwarden.dataDir.trim()) { showError('请选择 Vaultwarden 数据目录', 0); return; }
   if (form.type === 'vaultwarden' && form.vaultwarden.dbType !== 'sqlite' && (!form.vaultwarden.database.host.trim() || !form.vaultwarden.database.name.trim() || !form.vaultwarden.database.username.trim())) { showError('请填写数据库主机、数据库名称和用户名', 0); return; }
   if (form.type === 'newapi' && !form.newapi.dataDir.trim()) { showError('请选择 new-api 数据目录', 0); return; }
@@ -206,8 +210,9 @@ void loadRemotes();
             <label v-else class="field full">任务名称<input v-model="form.name" maxlength="100" placeholder="任务名称" /></label>
             <label class="field full">任务描述<textarea v-model="form.description" maxlength="500" rows="3" placeholder="可选" /></label>
             <div class="field full"><span>标签</span><div class="tag-input"><span v-for="(tag, index) in form.tags" :key="tag" class="tag-chip">{{ tag }}<button type="button" :title="`移除标签 ${tag}`" :aria-label="`移除标签 ${tag}`" @click="form.tags.splice(index, 1)"><X :size="11" /></button></span><input v-model="tagDraft" list="job-tag-suggestions" aria-label="添加标签" :placeholder="form.tags.length ? '' : '例如 mysql，回车添加'" :disabled="form.tags.length >= 10" maxlength="32" @keydown="tagKey" @blur="addTags()" /></div><datalist id="job-tag-suggestions"><option v-for="tag in knownTags" :key="tag" :value="tag" /></datalist></div>
-            <div v-if="form.type !== 'system' && !(batch && canBatch)" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button><button type="button" :class="{ active: form.type === 'newapi' }" @click="form.type = 'newapi'"><KeyRound :size="17" />new-api</button></div></div>
+            <div v-if="form.type !== 'system' && !(batch && canBatch)" class="field full"><span>备份类型</span><div class="segmented"><button type="button" :class="{ active: form.type === 'directory' }" @click="form.type = 'directory'"><Folder :size="17" />目录</button><button type="button" :class="{ active: form.type === 'file' }" @click="form.type = 'file'"><FileText :size="17" />单文件</button><button type="button" :class="{ active: form.type === 'vaultwarden' }" @click="form.type = 'vaultwarden'"><Database :size="17" />Vaultwarden</button><button type="button" :class="{ active: form.type === 'newapi' }" @click="form.type = 'newapi'"><KeyRound :size="17" />new-api</button></div></div>
             <label v-if="form.type === 'directory'" class="field full">{{ batch && canBatch ? '父目录' : '源目录' }}<div class="input-action"><input v-model="form.sourcePath" placeholder="/sources/data" @change="batch && canBatch && loadBatchFolders()" /><button type="button" class="icon-button" title="浏览源目录" aria-label="浏览源目录" @click="sourcePicker = 'sourcePath'"><FolderOpen :size="18" /></button></div></label>
+            <label v-else-if="form.type === 'file'" class="field full">源文件<div class="input-action"><input v-model="form.sourcePath" placeholder="/sources/data/report.pdf" /><button type="button" class="icon-button" title="浏览源文件" aria-label="浏览源文件" @click="sourcePicker = 'sourcePath'"><FolderOpen :size="18" /></button></div><small class="field-hint">只打包这一个文件，不包含同目录的其他文件；压缩包内保留文件名本身。</small></label>
             <div v-if="batch && canBatch" class="field full">
               <div class="batch-toolbar"><span>子目录（已选 {{ batchSelected.length }} / {{ batchFolders.length }}）</span><div><button type="button" class="text-button" :disabled="!batchFolders.length" @click="batchSelected = batchFolders.filter(folder => !folder.exists).map(folder => folder.name)">全选</button><button type="button" class="text-button" :disabled="!batchSelected.length" @click="batchSelected = []">全不选</button><button type="button" class="icon-button" title="重新读取子目录" aria-label="重新读取子目录" :disabled="batchLoading || !form.sourcePath.trim()" @click="loadBatchFolders"><RefreshCw :size="16" :class="{ spinning: batchLoading }" /></button></div></div>
               <div v-if="batchError" class="notice error">{{ batchError }}</div>
@@ -244,8 +249,8 @@ void loadRemotes();
                 @pick="sourcePicker = newapiPickerFromField($event)"
               />
             </template>
-            <div v-else class="field full"><span>备份内容</span><strong>系统状态、加密密钥、rclone 配置</strong></div>
-            <label v-if="form.type !== 'system'" class="field full">排除规则<textarea v-model="excludes" rows="3" placeholder="*.log&#10;cache/**" /></label>
+            <div v-else-if="form.type === 'system'" class="field full"><span>备份内容</span><strong>系统状态、加密密钥、rclone 配置</strong></div>
+            <label v-if="form.type !== 'system' && form.type !== 'file'" class="field full">排除规则<textarea v-model="excludes" rows="3" placeholder="*.log&#10;cache/**" /></label>
             <label class="check-row full"><input v-model="form.enabled" type="checkbox" />启用任务</label>
           </div>
         </section>
@@ -309,6 +314,6 @@ void loadRemotes();
       <footer class="modal-footer"><button class="button secondary" type="button" @click="emit('close')">取消</button><button class="button primary" :disabled="saving"><Save :size="16" />{{ saving ? '保存中…' : batch && canBatch ? `创建 ${batchSelected.length} 个任务` : '保存任务' }}</button></footer>
     </form>
   </Modal>
-  <PathPicker v-if="sourcePicker" kind="source" :initial-path="pickerPath(sourcePicker)" @close="sourcePicker = null" @select="selectSource" />
+  <PathPicker v-if="sourcePicker" kind="source" :select="form.type === 'file' ? 'file' : 'directory'" :initial-path="pickerPath(sourcePicker)" :initial-file="form.type === 'file' ? form.sourcePath : undefined" @close="sourcePicker = null" @select="selectSource" />
   <PathPicker v-if="destinationPicker !== null" kind="remote" :remote="form.destinations[destinationPicker]?.remote" :initial-path="form.destinations[destinationPicker]?.path" @close="destinationPicker = null" @select="path => { if (destinationPicker !== null) form.destinations[destinationPicker]!.path = path; destinationPicker = null; }" />
 </template>

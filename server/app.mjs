@@ -18,6 +18,22 @@ const remoteSchema = z.string().trim().min(1).max(128).regex(/^[\w .-]+$/, 'Inva
 const relativeRemotePath = z.string().max(1024).refine((value) => !value.includes('\0') && !/[\\\r\n]/.test(value) && !value.startsWith('/') && !value.split('/').includes('..') && !value.includes(':'), 'Destination must be a relative remote path.');
 const remoteRequestSchema = z.object({ remote: remoteSchema, path: relativeRemotePath.default('') });
 const runStatusSchema = z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+// Clone accepts only an optional replacement name; unknown keys are rejected so callers cannot smuggle fields.
+const cloneJobRequestSchema = z.object({ name: z.string().trim().min(1).max(100).optional() }).strict();
+
+// Default clone name keeps the source title while staying within the 100-character job-name limit.
+// The limit is UTF-16 code units (Zod `max(100)`), so accumulate whole code points until the budget is spent;
+// a 2-unit character is never split, and the resulting name is always <= 100 code units.
+function cloneJobName(sourceName) {
+  const suffix = ' (副本)';
+  const budget = 100 - suffix.length;
+  let head = '';
+  for (const char of String(sourceName ?? '').trim()) {
+    if (head.length + char.length > budget) break;
+    head += char;
+  }
+  return `${head}${suffix}`;
+}
 
 function validateJob(input, config, { allowMissing = false } = {}) {
   const job = jobSchema.parse(input);
@@ -29,7 +45,11 @@ function validateJob(input, config, { allowMissing = false } = {}) {
     if (job.enabled && !job.archive.password) throw new AppError('Set an archive password before enabling the system configuration task.', 400, 'ARCHIVE_PASSWORD_REQUIRED');
   } else if (job.type === 'directory') job.sourcePath = resolveSourcePath(config, job.sourcePath, { directory: true, allowMissing });
   else if (job.type === 'newapi') validateNewApiJob(job, config, { allowMissing });
-  else {
+  else if (job.type === 'file') {
+    // A file task packages exactly one regular file; watch/incremental and exclusions stay directory-only features.
+    job.sourcePath = resolveSourcePath(config, job.sourcePath, { file: true, allowMissing });
+    job.excludes = [];
+  } else {
     const dataDir = job.vaultwarden.dataDir || job.sourcePath;
     job.vaultwarden.dataDir = resolveSourcePath(config, dataDir, { directory: true, allowMissing });
     job.sourcePath = job.vaultwarden.dataDir;
@@ -146,6 +166,17 @@ export async function createApp(options = {}) {
     scheduler.refresh();
     watcher.refresh();
     res.status(201).json(created);
+  }));
+  app.post('/api/jobs/:id/clone', wrap((req, res) => {
+    const source = store.getJob(req.params.id, { includeSecrets: true });
+    if (!source) throw new AppError('Backup task does not exist.', 404, 'JOB_NOT_FOUND');
+    if (req.params.id === SYSTEM_JOB_ID) throw new AppError('The built-in system configuration task cannot be cloned.', 409, 'SYSTEM_JOB_CLONE_FORBIDDEN');
+    const body = cloneJobRequestSchema.parse(req.body ?? {});
+    // Validate against the private source so sealed secrets survive; the paused copy still enforces roots and types
+    // for any path that currently exists, while allowMissing keeps a temporarily absent source cloneable.
+    const validated = validateJob({ ...source, name: body.name || cloneJobName(source.name), enabled: false }, config, { allowMissing: true });
+    // Cloning must not refresh the scheduler or watchers: refresh rewrites nextRunAt/updatedAt on existing jobs.
+    res.status(201).json(store.cloneJob(source.id, validated));
   }));
   app.get('/api/jobs/:id', wrap((req, res) => res.json(getJob(req.params.id))));
   app.patch('/api/jobs/:id', wrap((req, res) => {
