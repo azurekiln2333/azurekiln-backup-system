@@ -57,3 +57,34 @@ Reviewed p5 newapi-data-backup: verified SQLite online-backup snapshot, path san
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: Site inventory and shared backup job links
+<!-- trellis-session: v=2 fp=b65b62a51633a68b -->
+
+**Date**: 2026-10-24
+**Task**: Site inventory and shared backup job links
+**Branch**: `feat/site-management`
+
+### Summary
+
+Implemented and verified site CRUD, multiple domains, independent tags, bidirectional many-to-many job links and safe deletion/restore. User authorized the scoped commit and feature-branch push.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2dcc72be0d2414a37b901170a145278d09d873ad` | feat(sites): add site inventory and shared backup job links |
+
+### Testing
+
+- [OK] 91 tests: 90 passed, 0 failed, 1 intentional Windows symlink skip; type check and production build passed.
+- [OK] Browser: 57 screenshots and no browser errors; layout: 56 asserted renders and 60 screenshots; independent review PASS AC1-AC6.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Publish feat/site-management to GitHub; handle image CI and new-api adapter follow-ups in their separate tasks.

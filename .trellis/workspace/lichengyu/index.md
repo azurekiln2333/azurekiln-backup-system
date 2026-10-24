@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
-- **Last Active**: 2026-10-18
+- **Total Sessions**: 5
+- **Last Active**: 2026-10-24
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~59 | Active |
+| `journal-1.md` | ~90 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-10-24 | Site inventory and shared backup job links | `2dcc72be0d2414a37b901170a145278d09d873ad` | `feat/site-management` |
 | 3 | 2026-10-18 | final regression + p5 review (pane w1H:p3) | `a055564` | `main` |
 | 2 | 2026-10-18 | ui-shell: rebuild console shell after newapi (pane w1H:p3) | `57c87f0` | `main` |
 <!-- @@@/auto:session-history -->
