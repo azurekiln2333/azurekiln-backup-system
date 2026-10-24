@@ -88,3 +88,39 @@ Implemented and verified site CRUD, multiple domains, independent tags, bidirect
 ### Next Steps
 
 - Publish feat/site-management to GitHub; handle image CI and new-api adapter follow-ups in their separate tasks.
+
+
+## Session 6: Compact sites, single-file backups and job cloning
+<!-- trellis-session: v=2 fp=486b46c7d27028ea -->
+
+**Date**: 2026-10-25
+**Task**: Compact sites, single-file backups and job cloning
+**Branch**: `feat/site-console-density`
+
+### Summary
+
+Implemented and independently accepted site repository links/notes, compact site rows and overview preview, safe single-file backups and paused server-side job cloning.
+
+### Main Changes
+
+- Multiple local provider icons and repository links, remarks, hostname-only identity and independent loading/error/retry states.
+- Regular-file backup uses the existing encrypted archive lifecycle; clones preserve private secrets and site links while paused with fresh runtime identity.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `77629f5` | feat: add compact sites, file backups and job cloning |
+
+### Testing
+
+- [OK] 108 tests: 106 passed, zero failed, two Windows platform skips; real encrypted file and system export/restore round trips passed.
+- [OK] Type/build, 64-screenshot browser lifecycle (four real backups), 56-render layout matrix, deliberate-defect controls, radius and whitespace passed; two independent reviewers closed AC1-AC8.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Handle GHCR image CI and new-api adapter follow-ups in their separate tasks.
