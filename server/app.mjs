@@ -178,6 +178,20 @@ export async function createApp(options = {}) {
     watcher.refresh();
     res.status(204).end();
   }));
+  // Sites are inventory metadata: reading and mutating them never refreshes the scheduler, watchers or job records.
+  app.get('/api/sites', (_req, res) => res.json(store.listSites()));
+  app.post('/api/sites', wrap((req, res) => res.status(201).json(store.saveSite(z.record(z.unknown()).parse(req.body)))));
+  app.get('/api/sites/:id', wrap((req, res) => {
+    const site = store.getSite(req.params.id);
+    if (!site) throw new AppError('Site does not exist.', 404, 'SITE_NOT_FOUND');
+    res.json(site);
+  }));
+  app.patch('/api/sites/:id', wrap((req, res) => res.json(store.saveSite(z.record(z.unknown()).parse(req.body), req.params.id))));
+  app.delete('/api/sites/:id', wrap((req, res) => {
+    if (!store.getSite(req.params.id)) throw new AppError('Site does not exist.', 404, 'SITE_NOT_FOUND');
+    store.deleteSite(req.params.id);
+    res.status(204).end();
+  }));
   app.post('/api/jobs/:id/run', wrap((req, res) => {
     const job = getJob(req.params.id);
     if (job.type === 'system' && (!job.destinations.length || !job.archive.passwordSet)) throw new AppError('Configure a remote destination and archive password before running the system task.', 400, 'SYSTEM_JOB_UNCONFIGURED');

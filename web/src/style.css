@@ -320,6 +320,52 @@ button.tag-chip:hover, .tag-chip.active { background: var(--primary); color: #ff
 .tag-input input { flex: 1; min-width: 120px; height: 27px; border: 0; padding: 0 4px; background: transparent; }
 .tag-input input:focus { outline: none; }
 .tag-input .tag-chip button { display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: inherit; }
+/*
+ * Site inventory: one row per site, mapping name → addresses → tags → the
+ * actual linked tasks. Rows wrap instead of using a wide table so long domains
+ * and shared task names stay readable at 360px without horizontal scrolling.
+ */
+.site-list { display: flex; flex-direction: column; min-width: 0; }
+.site-row { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 18px 20px; border-top: 1px solid var(--border); }
+.site-row:first-child { border-top: 0; }
+.site-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+.site-identity { display: flex; align-items: flex-start; gap: 10px; min-width: 0; color: var(--primary); }
+.site-identity > div { min-width: 0; }
+.site-name { display: block; font-size: 13px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.site-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.site-actions { display: flex; flex-shrink: 0; gap: 2px; }
+.site-domains { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.site-domain { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 7px; border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--primary); font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+a.site-domain:hover { background: var(--blue-soft); }
+/* Reuse the task tag chips, but without the list's task-column indent. */
+.site-tags { margin-top: 0; padding-left: 0; }
+.site-jobs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.site-jobs-label { color: var(--muted); font-size: 10px; }
+.site-job { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; max-width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text); text-align: left; }
+.site-job:hover { border-color: var(--primary); }
+/* Unresolved links stay visible but read as "unknown", never as a deleted task. */
+.site-job.pending, .site-job.unknown { border-style: dashed; color: var(--muted); cursor: default; }
+.site-job.pending:hover, .site-job.unknown:hover { border-color: var(--border); }
+.site-job-name { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.site-job-type { color: var(--muted); font-size: 10px; }
+.site-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.site-error-body { padding-top: 16px; }
+.site-error-body .notice { margin-bottom: 0; }
+.site-job-search { max-width: none; }
+.site-job-options { display: flex; flex-direction: column; max-height: 240px; overflow: auto; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.site-job-option { align-items: flex-start; gap: 9px; padding: 9px 4px; border-bottom: 1px solid var(--border); }
+.site-job-option:last-child { border-bottom: 0; }
+.site-job-option input { margin-top: 2px; }
+.site-job-option-main { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.site-job-option-main strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.site-job-option-main .muted { font-size: 10px; overflow-wrap: anywhere; }
+.site-job-option .count { flex-shrink: 0; }
+.domain-editor { display: flex; flex-direction: column; gap: 8px; }
+.domain-row { display: flex; align-items: center; gap: 6px; }
+.domain-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.site-preview { padding: 11px 13px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--surface-soft); }
+.site-preview-name { display: block; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.field-error { color: var(--red); font-size: 11px; font-weight: 400; }
 .batch-folders { max-height: 230px; overflow: auto; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .batch-folders .check-row { padding: 10px 4px; border-bottom: 1px solid var(--border); }
 .batch-folders .check-row:last-child { border-bottom: 0; }
@@ -594,6 +640,11 @@ body.modal-open .toast-message { display: none; }
   .dialog-tabs { gap: 20px; padding: 0 17px; }
   .dialog-tabs button { font-size: 11px; }
   .editor-body { min-height: 340px; }
+  /* Site rows keep every label visible: the row body wraps, only the task chips
+     take the full width so a long shared name is never truncated. */
+  .site-row { padding: 14px; gap: 10px; }
+  .site-job { width: 100%; }
+  .domain-row { gap: 4px; }
   .run-properties { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-title { gap: 8px; font-size: 11px; }
   .run-actions { gap: 2px; }

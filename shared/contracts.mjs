@@ -35,14 +35,85 @@ const vaultwardenDatabaseSchema = databaseSchema
   .default({});
 
 // Tags are free-form labels for grouping tasks; duplicates are removed case-insensitively, keeping the first spelling.
-const tagList = z.array(z.string().trim().min(1).max(32).refine((value) => !/[,\r\n\0]/.test(value), '标签不能包含逗号或换行。'))
+// Exported so site tags reuse the exact same rules while staying an independent value set from job tags.
+export const tagListSchema = z.array(z.string().trim().min(1).max(32).refine((value) => !/[,\r\n\0]/.test(value), '标签不能包含逗号或换行。'))
   .max(10).default([])
-  .transform((tags) => tags.filter((tag, index) => tags.findIndex((other) => other.toLowerCase() === tag.toLowerCase()) === index));
+  .transform(dedupeTags);
+
+/** @param {string[]} tags @returns {string[]} */
+function dedupeTags(tags) {
+  return tags.filter((tag, index) => tags.findIndex((other) => other.toLowerCase() === tag.toLowerCase()) === index);
+}
+
+// Site inventory contract. A site organizes existing backup tasks as many-to-many metadata; it never changes their execution.
+export const SITE_DOMAIN_LIMIT = 20;
+export const SITE_DOMAIN_MAX_LENGTH = 2048;
+export const SITE_BACKUP_JOB_LIMIT = 200;
+const SITE_DOMAIN_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+// Canonical address boundary shared by API validation and the UI. Bare hosts default to HTTPS; the URL parser
+// normalizes host casing and default ports while preserving case-sensitive path/query segments. No DNS or HTTP probe runs.
+/** @param {string} input @returns {string} */
+export function normalizeSiteDomain(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) throw new Error('地址不能为空。');
+  if (/[\0-\x1f\x7f ]/.test(raw)) throw new Error('地址不能包含空格或控制字符。');
+  const candidate = SITE_DOMAIN_SCHEME.test(raw) ? raw : raw.startsWith('//') ? `https:${raw}` : `https://${raw}`;
+  // A path-only input such as `/foo` or `https:///foo` has an empty authority; the URL parser would silently brand the path as a host.
+  if (candidate.slice(candidate.indexOf('://') + 3).startsWith('/')) throw new Error('地址必须是主机名或 HTTP(S) 地址。');
+  let url;
+  try { url = new URL(candidate); } catch { throw new Error('地址必须是主机名或 HTTP(S) 地址。'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('地址只支持 http:// 或 https://。');
+  if (url.username || url.password) throw new Error('地址不能包含用户名或密码。');
+  if (!url.hostname) throw new Error('地址缺少主机名。');
+  if (url.port === '0') throw new Error('端口 0 无效。');
+  // Reject empty DNS labels (`.com`, `a..b.com`); a single trailing dot (FQDN form) stays valid and IPv6 literals are skipped.
+  if (!url.hostname.startsWith('[')) {
+    const labels = url.hostname.split('.');
+    if (labels.at(-1) === '') labels.pop();
+    if (labels.some((label) => label === '')) throw new Error('地址中的主机名包含空标签。');
+  }
+  const href = url.href;
+  if (href.length > SITE_DOMAIN_MAX_LENGTH) throw new Error(`地址最多 ${SITE_DOMAIN_MAX_LENGTH} 个字符。`);
+  return href;
+}
+
+// Display label for an address: keeps an explicit non-default http:// visible, otherwise shows host/path/query/fragment.
+/** @param {string} value @returns {string} */
+export function siteDomainLabel(value) {
+  const url = new URL(normalizeSiteDomain(value));
+  const path = url.pathname === '/' && !url.search && !url.hash ? '' : url.pathname;
+  const suffix = `${url.host}${path}${url.search}${url.hash}`;
+  return url.protocol === 'http:' ? `http://${suffix}` : suffix;
+}
+
+// Single safe link projection for the UI: canonical href plus a compact label, never reparsed from raw input.
+/** @param {string} value @returns {{ href: string, label: string }} */
+export function siteDomainLink(value) {
+  const href = normalizeSiteDomain(value);
+  return { href, label: siteDomainLabel(href) };
+}
+
+export const siteDomainSchema = z.string().trim().min(1).max(SITE_DOMAIN_MAX_LENGTH, `地址最多 ${SITE_DOMAIN_MAX_LENGTH} 个字符。`)
+  .transform((value, ctx) => {
+    try { return normalizeSiteDomain(value); }
+    catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message }); return z.NEVER; }
+  });
+
+/** @param {string[]} items @returns {string[]} */
+const dedupeStrings = (items) => items.filter((item, index) => items.indexOf(item) === index);
+
+export const siteSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  domains: z.array(siteDomainSchema).max(SITE_DOMAIN_LIMIT).default([]).transform(dedupeStrings),
+  tags: tagListSchema,
+  backupJobIds: z.array(z.string().trim().min(1).max(100)).max(SITE_BACKUP_JOB_LIMIT).default([]).transform(dedupeStrings),
+});
 
 export const jobSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).default(''),
-  tags: tagList,
+  tags: tagListSchema,
   type: z.enum(['directory', 'vaultwarden', 'system', 'newapi']).default('directory'),
   enabled: z.boolean().default(true),
   sourcePath: z.string().trim().default(''),

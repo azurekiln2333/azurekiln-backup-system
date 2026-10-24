@@ -12,7 +12,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - `FileManagerView` emits `createJob(path)` from the current directory or a directory row; App opens a directory JobEditor with that source prefilled.
 - `PathPicker` accepts `{kind,remote?,initialPath?}` and emits an absolute source or relative remote path.
 - `RunDetail` accepts `{id}` and polls until execution, cleanup, and notification settle.
-- `nav.ts` exports `navItems` (the page registry), `Page` (derived from it), `isPage(value)`, and `pageTitle(page)`.
+- `nav.ts` exports `navItems` (the page registry), the explicit `Page` union, `isPage(value)`, and `pageTitle(page)`. Extend both the union and registry when adding a page.
 - `errors.ts` exports `friendlyError(cause, fallback?)` and `rawError(cause)` for user-facing error copy.
 - `AccountMenu` accepts `{username?, theme}` and emits `toggle-theme` / `logout`; it owns the only sign-out entry point.
 - `JobsView` accepts `{jobs,overview?,busyId,activeJob,canRunJob}` and emits `create|open|run|edit|remove|toggle|toggleWatch`. It owns the list's search, enable filter, tag filter, grouping mode and collapse state; it never calls the API itself, so App stays the sole owner of data and mutations.
@@ -22,8 +22,8 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 
 - Schemas/defaults come from `shared/contracts.mjs`; `web/src/types.ts` extends DTOs with timestamps, configured flags, and runtime results.
 - CRUD uses server responses as authoritative state. Never seed example jobs in the application.
-- Navigation is hash-based: overview/jobs/files/runs/storage/settings. Theme persists in `backup-theme`.
-- `web/src/nav.ts` is the single page registry: adding a page is one row there, which supplies the sidebar entry, the `Page` type, the hash validator, the `<h1>` title, and the optional task-count badge (`badge: 'jobs'`). The page body still needs its own `v-else-if` branch in `App.vue`.
+- Navigation is hash-based: overview/jobs/sites/files/runs/storage/settings. Theme persists in `backup-theme`.
+- `web/src/nav.ts` is the page registry: its rows supply sidebar entries, the hash validator, the `<h1>` title, and the optional task-count badge (`badge: 'jobs'`). Adding a page also requires extending the explicit `Page` union and an `App.vue` body branch.
 - Each page renders its title exactly once, as `.main-content h1`. The topbar shows only the fixed `管理控制台` label and must not repeat the page name. No page-eyebrow/English sub-heading above `h1`.
 - Sidebar collapse persists in `backup-sidebar-collapsed` (`'1'`/`'0'`, try/catch — storage may throw). Collapse only applies at `min-width: 901px` (desktop); at `max-width: 900px` the sidebar becomes a `transform` drawer keyed off `.sidebar.open` and all collapse rules are neutralised.
 - Collapse animates through `--sidebar-motion` (200ms) on `width`, `margin-left`, and label `opacity`+`max-width`. Never toggle `display` on labels mid-transition, and keep `overflow-x: hidden` on the rail so the transition never widens the document. The collapsed rail keeps icons plus `title` tooltips.
@@ -77,7 +77,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 
 Run `npm run check`, `npm run build`, `npm run check:layout`, and `npm run check:browser`. The browser scripts require installed Chromium and real rclone/7-Zip tools. They use isolated temporary state and local alias destinations, checks setup/config import/pickers/editor/execution/download/settings/login, and writes desktop/mobile/light/dark screenshots under `.artifacts/screenshots/` and `.artifacts/layout/`. File-browser assertions cover search before pagination, empty states, page shrink, missing-directory retry, stale directory/root responses, search responses arriving during the debounce delay, and both source-prefill actions. Freeze the browser clock for debounce race checks so assertions do not depend on network speed. Do not populate the user's real installation with fixtures.
 
-`npm run check:layout` is the layout acceptance gate and must stay assertion-based. It walks all six pages across 1440/768/390/360 in both themes and asserts: one `<h1>` per page, the fixed `管理控制台` shell context, header 48px/sticky/sibling-of-`.workspace`, rail 208px (44px collapsed), workspace inset 216/56 with an 8px radius, `main` at 1600px centred (verified at 1920), container radii within the 8px scale, no legacy layout classes (`.page-band`, `.section-heading`, `.metrics`, `.overview-columns`), no horizontal document overflow, no visible control outside the viewport, every table/toolbar/form inside a `.panel`, exactly one visible navigation toggle per width, an accessible name on the brand link, the stats band borderless/transparent at `18px 20px` with 24px icons, `content-grid` columns top-aligned at 1.6fr:1fr on desktop and full-width stacked at a 20px gap below 1100px, sticky `th` plus `overscroll-behavior-inline: contain` on `.table-wrap`, and a genuinely scrolled settings page in a 500px-tall viewport. The overview task list must contain the built-in `系统配置` row in **every** viewport/theme combination, with a non-zero row count and a visible name/icon/source per row - the guard must not be skipped when zero rows render. Never weaken these to print-only probes: the earlier "44 screenshots passed but the layout was still the old one" round failed exactly because the checks could not fail. Prove a new guard can fail by temporarily reintroducing the defect before shipping it.
+`npm run check:layout` is the layout acceptance gate and must stay assertion-based. It walks all seven pages across 1440/768/390/360 in both themes and asserts: one `<h1>` per page, the fixed `管理控制台` shell context, header 48px/sticky/sibling-of-`.workspace`, rail 208px (44px collapsed), workspace inset 216/56 with an 8px radius, `main` at 1600px centred (verified at 1920), container radii within the 8px scale, no legacy layout classes (`.page-band`, `.section-heading`, `.metrics`, `.overview-columns`), no horizontal document overflow, no visible control outside the viewport, every table/toolbar/form inside a `.panel`, exactly one visible navigation toggle per width, an accessible name on the brand link, the stats band borderless/transparent at `18px 20px` with 24px icons, `content-grid` columns top-aligned at 1.6fr:1fr on desktop and full-width stacked at a 20px gap below 1100px, sticky `th` plus `overscroll-behavior-inline: contain` on `.table-wrap`, and a genuinely scrolled settings page in a 500px-tall viewport. The overview task list must contain the built-in `系统配置` row in **every** viewport/theme combination, with a non-zero row count and a visible name/icon/source per row - the guard must not be skipped when zero rows render. Never weaken these to print-only probes: the earlier "44 screenshots passed but the layout was still the old one" round failed exactly because the checks could not fail. Prove a new guard can fail by temporarily reintroducing the defect before shipping it.
 
 Also run `node scripts/ui-radius-audit.mjs`; it scans `web/src/**/*.{vue,css}` and must report zero violations.
 
@@ -126,3 +126,56 @@ Correct: transition `opacity` + `max-width`, and scope collapse to `min-width: 9
 Wrong: two controls with the same accessible name (for example an empty-state shortcut reusing the form's submit label).
 
 Correct: give the shortcut its own label so strict role locators stay unambiguous.
+
+## Site inventory UI
+
+### 1. Scope / Trigger
+
+Apply to `#sites`, site editing/filtering, reverse job associations, and independent resource loading. Site metadata must show the exact saved domain → job mapping without altering job execution.
+
+### 2. Signatures
+
+- `SiteInput` derives from shared `siteSchema`; `Site` adds `id`, `createdAt`, `updatedAt`. The arrays are `string[]`; do not let untyped JS transforms reduce them to `any`.
+- `SitesView` receives `{sites,jobs,loaded,jobsLoaded,loading,error,errorDetail?,busyId}` and emits `create|edit|remove|openJob|reload`.
+- `SiteEditor` receives `{site?,jobs,jobsLoaded,sites,save}` where `save(id,input) -> Promise<Site>` is App-owned. It emits `saved(site)|close`.
+- App owns site APIs, request epochs, editor/delete state and the authoritative site list. Reverse job detail derives associated sites from this same list.
+
+### 3. Contracts
+
+- Navigation includes `sites` in both `Page` and the registry, with the single shell h1 `站点管理`. Content remains inside existing panels with the radius scale and mobile drawer.
+- Show saved site name, wrapping HTTP(S) address links, site tag chips and actual linked job names/types/run states on the page. Use shared `siteDomainLink` for both canonical href and display label, with `noopener noreferrer` for new tabs; validation never probes a domain.
+- Site search covers name/domain/tag; site tags remain independent of job tags. Linked/unlinked counts and filtering use saved `backupJobIds`, even when job details are unavailable.
+- Load sites and jobs independently of overview/runs. A rejected sibling request must not suppress the site request. `loaded` distinguishes a successfully empty inventory from a list never read; `jobsLoaded` distinguishes unresolved details from deletion. Keep the refresh guard active until all independent loads settle, and do not let another request's success clear a failure notice.
+- Drop stale site responses with request epochs. Clone form values once on mount; polling must not replace a draft or close it when its saved site disappears. Warn and retain the draft. A failed save also retains values.
+- Validate the entire submitted site with shared `siteSchema`; show field messages and a useful Chinese explanation for `SITE_JOB_NOT_FOUND`/`SITE_NOT_FOUND`. Raw failures belong in tooltips. A missing selected ID can be explicitly removed only after a successful job-list read; failed reads never silently clear associations.
+- Job deletion refreshes the site projection explicitly. Automatic unlink does not change site `updatedAt`, so timestamps cannot establish relation freshness.
+- Deleting a site confirms that only metadata/links are removed and jobs/history/archives remain. Clicking a linked job opens existing job detail/version UI; clicking a reverse site chip opens its editor on `#sites`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Site read fails | Error + retry; no empty-success inventory |
+| Overview/jobs read fails but sites succeed | Saved sites remain visible; unknown task details show a pending state, preserving the saved count/IDs |
+| Job disappears during editing | Keep the draft; show actionable missing-link copy and an explicit removal action |
+| Site disappears during editing | Keep the draft and warn; do not recreate it silently |
+| Invalid domain/tag or save failure | Shared field validation/API error; entered values remain |
+| No search/tag matches | Separate no-match state and clear-filter action |
+
+### 5. Good / Base / Bad Cases
+
+- Good: two sites share a task, list it under both, and job detail lists both sites. Unlinking one leaves the other intact.
+- Base: a saved site can start without addresses/tasks, and an installation with no sites shows the create shortcut after loading succeeds.
+- Bad: `/overview` rejects before `/sites` is attempted, so the UI claims there are no sites; or `/jobs` fails and existing links are called deleted.
+
+### 6. Tests Required
+
+`check:browser` exercises real site CRUD/shared links, name/domain/tag filtering, forward and reverse navigation, read retry, polling draft preservation, failed saves, safe unlink/delete, reload persistence, and independent overview/job failures. Keep intentional HTTP failures scoped in console-error handling; do not suppress unrelated browser errors.
+
+The layout matrix now has **seven pages × four widths × two themes = 56 asserted renders**, plus existing supplements. Populate two sites and multiple/shared tasks through authenticated APIs, await actual labels, and assert site/domain/job names visibly render at each width/theme. Reuse the production guard in three fault injections hiding name/domain/job labels, asserting it throws and then passes after removal. Retain every existing shell/overview/scroll/radius guard, and inspect actual desktop/mobile/light/dark screenshots.
+
+### 7. Wrong vs Correct
+
+Wrong: `Promise.all([overview,jobs,runs]).then(loadSites)`, treating `jobs=[]` after a failed fetch as deletion, or replacing a mounted editor's draft whenever sites refresh.
+
+Correct: independently load each resource with honest success/error flags, preserve saved association IDs, and keep the editor's mounted draft separate from refreshed authoritative records.

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Verify data deletion/secret/runtime invariants and old/current system restore compatibility"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Verify authoritative APIs, site empty/error states, shared jobs, panels and all existing layout guards"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit association truth and full cross-layer CRUD/restore behavior"}
+{"file":".trellis/tasks/10-24-site-management/research/backend-sites.md","reason":"Audit schema/migration/transaction and actual restore assumptions"}
+{"file":".trellis/tasks/10-24-site-management/research/frontend-sites.md","reason":"Audit navigation, reverse mapping, populated seven-page matrix and browser coverage"}

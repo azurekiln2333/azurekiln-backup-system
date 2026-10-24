@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { jobSchema, settingsSchema } from '../../shared/contracts.mjs';
+import { jobSchema, settingsSchema, siteSchema } from '../../shared/contracts.mjs';
 
 export type JobInput = z.infer<typeof jobSchema>;
 export type Settings = z.infer<typeof settingsSchema> & {
@@ -19,6 +19,20 @@ export interface Job extends JobInput {
     database: JobInput['newapi']['database'] & { passwordSet?: boolean };
     logDatabase: JobInput['newapi']['logDatabase'] & { passwordSet?: boolean };
   };
+}
+/**
+ * Site inventory: metadata plus many-to-many links to existing backup jobs.
+ *
+ * Derived from the shared contract, which owns name/domain/tag validation and
+ * canonicalizes each address to an HTTP(S) href. The server owns `id`/timestamps
+ * and projects `backupJobIds` from the relation table, so links are never
+ * duplicated inside job DTOs.
+ */
+export type SiteInput = z.infer<typeof siteSchema>;
+export interface Site extends SiteInput {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
 }
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export interface Target {

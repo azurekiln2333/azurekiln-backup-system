@@ -9,6 +9,7 @@ AzureKiln Backup is a single-administrator backup system for directories, Vaultw
 | Area | Support |
 | --- | --- |
 | Sources | Directories; Vaultwarden with SQLite, PostgreSQL, or MySQL/MariaDB; application configuration |
+| Sites | Site name, multiple domain/HTTP(S) addresses and independent tags; many-to-many links to backup tasks |
 | Archives | tar.gz, AES-256-encrypted 7z or ZIP; independently configured rclone destinations |
 | Operations | Manual and scheduled runs, remote verification, retention, downloads, and email notifications |
 | Administration | Read-only mounted-file browser, run logs, storage usage, and local-archive cleanup |
@@ -89,6 +90,18 @@ Each run creates an independent remote version and verifies the upload. Plaintex
 The settings page shows total temporary usage, retained successful-archive usage, other temporary files, and each retained archive. Manually retained successful archives count toward the temporary-space limit and are not removed by failed-file housekeeping. If capacity is insufficient, a new backup fails until space is freed or the limit is increased. Switching back to immediate cleanup affects future runs only. Export and compression are monitored every 250 ms; a short overrun remains possible between checks. Restart recovery removes plaintext and database credentials left by interrupted runs.
 
 If an unencrypted tar.gz archive is retained manually, its local copy is also unencrypted. Restrict access to the application's persistent directory and remove local copies when they are no longer required.
+
+## Site management
+
+The Site Management page organizes existing backup tasks by site without changing how they run. A site has a name, one or more domain/HTTP(S) addresses, its own tags, and associated backup tasks; the server records creation and update timestamps, and there is no description or notes field.
+
+A domain may be a bare host or an `http(s)://` address; a bare host is treated as HTTPS. Up to 20 entries are allowed, each at most 2048 characters, and an address may not contain a username or password. Domains and associated tasks may both start empty and be filled in later. Domains are inventory and navigation metadata only: the application never probes or visits them while saving, and only validated HTTP(S) links are clickable.
+
+Site tags are independent of task tags; neither is copied from or written to the other. Sites and tasks form a many-to-many relationship: one site can link several tasks (for example a database, configuration, and file task), and one shared task such as a shared database can be linked to several sites. Unbinding or deleting a site removes only the site record and its associations; backup tasks, schedules, watchers, credentials, run history, local and remote archives, and other sites' links stay intact. Deleting a task removes its links from every site while keeping the existing task-deletion protections and history policy.
+
+The site list searches names, domains, and tags and filters by site tag. It shows each site's name, domains, site tags, and its linked tasks with their names, types, and current run states; clicking a task name opens the existing task detail, which also lists the sites currently linked to it.
+
+Site records live in `state.sqlite` with the rest of the application state, so they are exported with the application-configuration backup and restored with it. Importing an older archive that has no site tables yields an empty site list and leaves existing tasks untouched.
 
 ## Authentication and notifications
 

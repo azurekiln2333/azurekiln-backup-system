@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend/API/storage scope and required quality gates"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Persistence, system-state backup/restore, deletion and secret invariants"}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend layer conventions and verification requirements"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"App-owned mutation/data boundary, panel layout, shared contracts, browser/layout gates"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"One source of truth across schema/store/API/UI and restore boundaries"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse tag validation/input and existing modal/task details without unnecessary abstractions"}
+{"file":".trellis/tasks/10-24-site-management/research/backend-sites.md","reason":"Backend extension points, transaction/cascade/restore evidence; user-confirmed many-to-many supersedes provisional choices"}
+{"file":".trellis/tasks/10-24-site-management/research/frontend-sites.md","reason":"Navigation/state/layout test evidence; user-confirmed many-to-many supersedes provisional choices"}

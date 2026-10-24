@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { jobSchema, settingsSchema } from '../shared/contracts.mjs';
+import { jobSchema, settingsSchema, siteSchema } from '../shared/contracts.mjs';
 import { AppError } from './config.mjs';
 
 const jobSecrets = [['archive', 'password'], ['vaultwarden', 'database', 'password'], ['newapi', 'database', 'password'], ['newapi', 'logDatabase', 'password']];
@@ -52,6 +52,13 @@ export function createStore(config) {
     CREATE TABLE IF NOT EXISTS oauth_transactions (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS secret_check (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS watch_baselines (job_id TEXT PRIMARY KEY, source_path TEXT NOT NULL, captured_at TEXT NOT NULL, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS sites (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS site_jobs (
+      site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      PRIMARY KEY (site_id, job_id)
+    );
+    CREATE INDEX IF NOT EXISTS site_jobs_job ON site_jobs(job_id);
   `);
   function seal(value) {
     const iv = randomBytes(12);
@@ -112,6 +119,28 @@ export function createStore(config) {
     return result.replace(/(password|client_secret|access_token|refresh_token|authorization)(\s*[=:]\s*)([^\s,;]+)/gi, '$1$2[redacted]').slice(0, 8000);
   }
   const lastRunSummary = (run) => Object.fromEntries(['id', 'status', 'phase', 'startedAt', 'finishedAt', 'createdAt', 'archiveBytes', 'error', 'progress'].map((field) => [field, run[field] ?? null]));
+  // Associations live only in site_jobs; the public site projection always reads the live link set.
+  const siteJobIds = (siteId) => db.prepare('SELECT job_id FROM site_jobs WHERE site_id=? ORDER BY rowid').all(siteId).map((row) => row.job_id);
+  const siteView = (id, data) => ({
+    id,
+    name: data.name ?? '',
+    domains: data.domains ?? [],
+    tags: data.tags ?? [],
+    backupJobIds: siteJobIds(id),
+    createdAt: data.createdAt ?? null,
+    updatedAt: data.updatedAt ?? null,
+  });
+  const inTransaction = (work) => {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = work();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* the failed statement already closed the transaction */ }
+      throw error;
+    }
+  };
   const store = {
     ensureSystemJob() {
       if (store.getJob(SYSTEM_JOB_ID)) return store.getJob(SYSTEM_JOB_ID);
@@ -153,8 +182,39 @@ export function createStore(config) {
     },
     deleteJob(id) {
       if (id === SYSTEM_JOB_ID) return false;
+      // site_jobs rows are removed by ON DELETE CASCADE, so links are cleaned without touching site metadata.
       db.prepare('DELETE FROM watch_baselines WHERE job_id=?').run(id);
       return db.prepare('DELETE FROM jobs WHERE id=?').run(id).changes > 0;
+    },
+    listSites() {
+      return db.prepare('SELECT id,data FROM sites ORDER BY rowid').all().map((row) => siteView(row.id, JSON.parse(row.data)));
+    },
+    getSite(id) {
+      const row = db.prepare('SELECT data FROM sites WHERE id=?').get(id);
+      return row ? siteView(id, JSON.parse(row.data)) : null;
+    },
+    // Site metadata plus the replacement association set commits as one transaction; an invalid job ID leaves the old record intact.
+    saveSite(input, id) {
+      const previous = id ? store.getSite(id) : null;
+      if (id && !previous) throw new AppError('Site does not exist.', 404, 'SITE_NOT_FOUND');
+      const parsed = siteSchema.parse(previous ? mergeConfig(previous, input) : input);
+      const now = new Date().toISOString();
+      const record = { name: parsed.name, domains: parsed.domains, tags: parsed.tags, createdAt: previous?.createdAt || now, updatedAt: now };
+      return inTransaction(() => {
+        const findJob = db.prepare('SELECT 1 AS present FROM jobs WHERE id=?');
+        const missing = parsed.backupJobIds.filter((jobId) => !findJob.get(jobId));
+        if (missing.length) throw new AppError(`Backup task does not exist: ${missing.join(', ')}`, 400, 'SITE_JOB_NOT_FOUND');
+        const siteId = id || randomUUID();
+        db.prepare('INSERT INTO sites(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(siteId, JSON.stringify(record));
+        db.prepare('DELETE FROM site_jobs WHERE site_id=?').run(siteId);
+        const link = db.prepare('INSERT INTO site_jobs(site_id,job_id) VALUES(?,?)');
+        for (const jobId of parsed.backupJobIds) link.run(siteId, jobId);
+        return store.getSite(siteId);
+      });
+    },
+    // Removes only the site record and its links; jobs, schedules, runs and archives are untouched.
+    deleteSite(id) {
+      return db.prepare('DELETE FROM sites WHERE id=?').run(id).changes > 0;
     },
     // Incremental watch baseline: the file snapshot ({relativePath: [size, mtimeMs] | ['link', target]}) already backed up.
     getWatchBaseline(jobId, sourcePath) {

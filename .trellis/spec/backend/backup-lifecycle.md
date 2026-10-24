@@ -74,3 +74,52 @@ Run `npm test`. `tests/api.test.mjs` covers setup/session/CSRF/OIDC/secrets/sour
 Wrong: copy live `db.sqlite3` without WAL, encrypt stored database passwords but log subprocess credentials, pass untrusted database names as flags, or delete successful staging only after email.
 
 Correct: use online snapshot + integrity check; fixed executable argv with redaction and database option separator; remove successful staging independently before email; seal native rclone configuration credentials.
+
+## Site inventory and job associations
+
+### 1. Scope / Trigger
+
+Apply when changing site CRUD, shared site validation, job deletion or system-state migration/restore. A site is administrator-maintained inventory; its associations do not execute or certify a backup.
+
+### 2. Signatures
+
+- `siteSchema`, `tagListSchema`, `siteDomainSchema`, `normalizeSiteDomain(input)`, `siteDomainLink(value) -> {href,label}` live in `shared/contracts.mjs`.
+- Store: `listSites()`, `getSite(id)`, `saveSite(input,id?)`, `deleteSite(id)`.
+- Authenticated routes: `GET /api/sites`, `POST /api/sites` (201), `GET/PATCH /api/sites/:id` (200), `DELETE /api/sites/:id` (204).
+- SQLite: `sites(id PRIMARY KEY,data)`; `site_jobs(site_id REFERENCES sites ON DELETE CASCADE,job_id REFERENCES jobs ON DELETE CASCADE,PRIMARY KEY(site_id,job_id))`; index `site_jobs_job(job_id)`. Do not make `job_id` unique.
+
+### 3. Contracts
+
+- Input is `{name,domains,tags,backupJobIds}`. Name is trimmed, required, at most 100 characters. Arrays default to `[]`; domains and links may be empty. Output adds server-owned `id`, `createdAt`, `updatedAt`, with no embedded private jobs or secrets.
+- Domains accept up to 20 entries, each at most 2048 characters before and after normalization. Bare hosts default to HTTPS; URL parsing normalizes host/default port while preserving path/query/fragment semantics. Deduplicate identical canonical hrefs, preserving first order. Validation performs no network requests.
+- Tags share the existing 10 × 32-character rules, with independent site/job values. Job IDs are bounded to 200 entries of 1–100 characters and deduplicated in request order. Typed JS transforms must expose `string[]` output to TypeScript consumers.
+- `site_jobs` is the sole association source. Site JSON holds metadata/timestamps only. `backupJobIds` is projected on every read; never copy it into job JSON.
+- `saveSite` merges a PATCH into the previous record before schema defaults apply, then validates all referenced jobs and writes metadata/replacement links in one store-owned transaction. Omitted arrays preserve values, supplied arrays replace, and `[]` clears.
+- Site saves/deletes never change jobs, schedules, watcher settings, credentials, runs or archives, nor refresh scheduler/watchers. Automatic unlink after job deletion changes only relation rows and leaves site `updatedAt` unchanged.
+- Startup creates the tables additively. Whole-database system snapshots include inventory automatically; an older restored database without site tables gains empty tables. Do not require site tables in the old-archive validator.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Unauthenticated request / mutation without CSRF or with foreign Origin | Existing 401 / 403 authentication boundary |
+| Missing site on GET/PATCH/DELETE | 404 `SITE_NOT_FOUND` |
+| Invalid field, unsupported URL scheme, URL credentials or oversized canonical href | 400 `VALIDATION_FAILED`, with field issues |
+| Any unknown job ID | 400 `SITE_JOB_NOT_FOUND`; prior metadata, timestamp and links unchanged |
+| Delete linked job | Existing active/system-job protections still apply; successful deletion cascades links from every site only |
+
+### 5. Good / Base / Bad Cases
+
+- Good: site A links DB + files; site B links the same DB. Unlinking A retains B and both jobs.
+- Base: a named site without addresses/jobs is valid; an old installation initially lists no sites.
+- Bad: one invalid job ID commits a new name but deletes old links, a site delete deletes backup data, or a restore drops the relation table.
+
+### 6. Tests Required
+
+`tests/sites.test.mjs` must exercise real HTTP/SQLite CRUD, both many-to-many directions, merge/replace/clear semantics, authoritative reads after rejected writes, auth/CSRF, public payloads, site/job deletion safety, reopen/legacy migration, current and old restore, and empty `PRAGMA foreign_key_check`. With real tools, export an actual encrypted system backup, download it, stage/import the exact archive, and compare saved inventory and relations. Snapshot-only fixtures do not establish archive export/decryption evidence.
+
+### 7. Wrong vs Correct
+
+Wrong: store `backupJobIds` in both site JSON and a join table, use `UNIQUE(job_id)`, or apply partial-schema defaults before merging a PATCH.
+
+Correct: project IDs from the composite-key relation, and merge → validate → transactionally replace metadata and links. A failed write leaves the prior authoritative record intact.

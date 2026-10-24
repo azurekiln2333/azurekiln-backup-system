@@ -3,7 +3,7 @@
 // Every assertion here is a hard assert. This is the guard the earlier
 // "44 screenshots but still the old layout" round was missing.
 //
-// Coverage: all 6 pages x {1440, 768, 390, 360} x {light, dark}, plus the
+// Coverage: all 7 pages x {1440, 768, 390, 360} x {light, dark}, plus the
 // collapsed rail, a 1920 centring check, and a genuinely scrolled settings page
 // in a deliberately short viewport.
 //
@@ -31,6 +31,7 @@ await mkdir(screenshotDir, { recursive: true });
 const pages = [
   { id: 'overview', h1: '备份概览' },
   { id: 'jobs', h1: '备份任务' },
+  { id: 'sites', h1: '站点管理' },
   { id: 'runs', h1: '执行记录' },
   { id: 'files', h1: '文件管理' },
   { id: 'storage', h1: '远端存储' },
@@ -136,6 +137,29 @@ const probe = (page) => page.evaluate(() => {
         rowWidth: Math.round(row.getBoundingClientRect().width),
       };
     }),
+    // Site rows must expose their name, domains and *actual linked task names*
+    // at every width/theme; a count hidden in a modal is not enough.
+    siteRows: [...document.querySelectorAll('.main-content .site-row')].map((row) => {
+      const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const c = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' && Number(c.opacity) > 0;
+      };
+      const name = row.querySelector('.site-name');
+      const domains = [...row.querySelectorAll('.site-domain')];
+      const jobs = [...row.querySelectorAll('.site-job .site-job-name')];
+      return {
+        name: name?.textContent?.trim() ?? null,
+        nameVisible: visible(name),
+        nameWidth: name ? Math.round(name.getBoundingClientRect().width) : 0,
+        domains: domains.map((el) => el.textContent.trim()),
+        domainsVisible: domains.length > 0 && domains.every(visible),
+        jobs: jobs.map((el) => el.textContent.trim()),
+        jobsVisible: jobs.length > 0 && jobs.every(visible),
+        rowWidth: Math.round(row.getBoundingClientRect().width),
+      };
+    }),
     navGroupLabels: [...document.querySelectorAll('.nav-label')].map((n) => n.textContent.trim()),
     // Exactly one navigation toggle must be visible at any width.
     visibleNavToggles: [...document.querySelectorAll('.shell-header .sidebar-toggle, .shell-header .mobile-menu')]
@@ -179,6 +203,26 @@ const probe = (page) => page.evaluate(() => {
   };
 });
 
+/**
+ * The single production site-visibility guard. The page matrix and the negative
+ * controls below both call this exact function, so weakening a copy cannot let
+ * a blank site page pass.
+ */
+function assertSiteVisibility(m, where) {
+  assert.ok(m.siteRows.length >= 2, `${where}: populated site rows render (${m.siteRows.length})`);
+  const populated = m.siteRows.find((row) => row.name === '总部门户');
+  assert.ok(populated, `${where}: fixture site is listed by name`);
+  assert.equal(populated.nameVisible, true, `${where}: site name is visible`);
+  assert.ok(populated.nameWidth > 0, `${where}: site name has width (${populated.nameWidth})`);
+  assert.ok(populated.domains.some((domain) => domain.includes('example.com')), `${where}: domain is displayed (${populated.domains.join(', ')})`);
+  assert.equal(populated.domainsVisible, true, `${where}: every domain link is visible`);
+  assert.ok(populated.jobs.includes('官网备份') && populated.jobs.includes('共享数据库'), `${where}: actual linked task names are displayed (${populated.jobs.join(', ')})`);
+  assert.equal(populated.jobsVisible, true, `${where}: every linked task label is visible`);
+  const shared = m.siteRows.find((row) => row.name === '共享站点');
+  assert.ok(shared && shared.jobs.includes('共享数据库'), `${where}: a shared job appears under both sites`);
+  assert.ok(populated.rowWidth > 0, `${where}: site row has layout width`);
+}
+
 const statsProbe = (page) => page.evaluate(() => [...document.querySelectorAll('.stat')].map((s) => {
   const c = getComputedStyle(s);
   const r = s.querySelector('svg')?.getBoundingClientRect();
@@ -207,6 +251,29 @@ try {
   await page.locator('.main-content h1').waitFor();
   await page.waitForTimeout(600);
 
+  // Populated, isolated site fixture created through the real API so the page
+  // matrix renders real name/domain/linked-task labels instead of an empty page.
+  // `context.request` shares the browser context cookies, so the UI session
+  // authenticates these writes; the shared CSRF token comes from auth status.
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const readApi = async (route) => {
+    const response = await context.request.get(`${baseUrl}/api${route}`);
+    assert.ok(response.ok(), `${route}: ${response.status()} ${await response.text()}`);
+    return response.json();
+  };
+  const writeApi = async (route, body) => {
+    const response = await context.request.post(`${baseUrl}/api${route}`, { headers: { 'content-type': 'application/json', 'x-csrf-token': (await readApi('/auth/status')).csrfToken }, data: JSON.stringify(body) });
+    assert.ok(response.ok(), `${route}: ${response.status()} ${await response.text()}`);
+    return response.json();
+  };
+  const fixtureJob = (name, folderPath) => ({ name, type: 'directory', sourcePath: folderPath, destinations: [{ remote: 'AB', path: `backups/${name}` }], archive: { format: '7z', encrypted: true, password: 'layout-site-password' } });
+  const canonicalRoot = runtime.config.sourceRoots[0];
+  const primaryJob = await writeApi('/jobs', fixtureJob('官网备份', path.join(canonicalRoot, 'demo')));
+  const sharedJob = await writeApi('/jobs', fixtureJob('共享数据库', path.join(canonicalRoot, 'demo')));
+  const primarySite = await writeApi('/sites', { name: '总部门户', domains: ['example.com', 'https://portal.example.com/app'], tags: ['prod', 'web'], backupJobIds: [primaryJob.id, sharedJob.id] });
+  await writeApi('/sites', { name: '共享站点', domains: [], tags: ['prod'], backupJobIds: [sharedJob.id] });
+  assert.equal(primarySite.name, '总部门户');
+
   const matrix = { pages: pages.length, viewports: viewports.length, themes: 2, screenshots: 0 };
 
   for (const theme of ['light', 'dark']) {
@@ -230,6 +297,7 @@ try {
           if (await toDark.count()) { await toDark.click(); await page.waitForTimeout(120); }
         }
         await page.waitForTimeout(220);
+        if (target.id === 'sites') await page.locator('.main-content .site-row').first().waitFor();
         const m = await probe(page);
         const where = `${theme}/${vp.name}/${target.id}`;
 
@@ -251,6 +319,8 @@ try {
         if (m.liveIndicator) assert.equal(m.liveIndicator.singleLine, true, `${where}: status stays on one line`);
         if (m.liveIndicator && !m.brandText?.hidden) assert.equal(m.liveIndicator.clipped, false, `${where}: status text not clipped`);
         if (m.brandText && !m.brandText.hidden) assert.equal(m.brandText.ellipsis, 'ellipsis', `${where}: brand ellipsizes`);
+
+        if (target.id === 'sites') assertSiteVisibility(m, where);
 
         if (target.id === 'overview') {
           // The list must exist and must be fully readable at every width/theme:
@@ -353,6 +423,29 @@ try {
       }
     }
   }
+
+  // ---- Prove the production site-visibility guard can actually fail ----
+  // Each fault hides exactly one field, then runs the *same* assertSiteVisibility
+  // guard through assert.throws, so a weakened copy cannot pass silently.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`http://127.0.0.1:${port}/#sites`);
+  await page.locator('.main-content .site-row').first().waitFor();
+  await page.waitForTimeout(200);
+  const withTemporaryStyle = async (css, check) => {
+    const tag = await page.addStyleTag({ content: css });
+    try { await check(await probe(page)); } finally { await tag.evaluate((el) => el.remove()); }
+  };
+  await withTemporaryStyle('.site-name { display: none !important; }', (hidden) => {
+    assert.throws(() => assertSiteVisibility(hidden, 'negative/name'), /site name is visible/, 'hiding the site name fails the production guard');
+  });
+  await withTemporaryStyle('.site-domain { display: none !important; }', (hidden) => {
+    assert.throws(() => assertSiteVisibility(hidden, 'negative/domain'), /every domain link is visible/, 'hiding a domain link fails the production guard');
+  });
+  await withTemporaryStyle('.site-job-name { display: none !important; }', (hidden) => {
+    assert.throws(() => assertSiteVisibility(hidden, 'negative/job'), /every linked task label is visible/, 'hiding a linked task label fails the production guard');
+  });
+  const restored = await probe(page);
+  assert.doesNotThrow(() => assertSiteVisibility(restored, 'negative/restored'), 'the production guard passes again once every fault is removed');
 
   // ---- R4: transparent, borderless stats with the agreed metrics ----
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -499,6 +592,7 @@ try {
   assert.equal(overviewRowSummary.named, overviewRowSummary.rows, `every overview row render shows a visible name (${overviewRowSummary.named}/${overviewRowSummary.rows})`);
   console.log(`Layout check passed: ${matrix.pages} pages x ${matrix.viewports} viewports x ${matrix.themes} themes (${matrix.screenshots} screenshots, ${checks} page renders asserted).`);
   console.log(`Overview task rows: ${overviewRowSummary.combos}/${expectedCombos} combinations, ${overviewRowSummary.rows} row renders, ${overviewRowSummary.named} with a visible name (${[...overviewRowSummary.texts].join(', ')}).`);
+  console.log(`Sites matrix: populated rows checked in ${viewports.length * 2} viewport/theme combinations, including the failing negative control.`);
   console.log(`Screenshots: ${screenshotDir}`);
 } finally {
   if (browser) await browser.close();
