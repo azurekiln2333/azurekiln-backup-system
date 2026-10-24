@@ -32,3 +32,7 @@ Only task/spec/evidence documentation changed after these product checks. The wo
 
 - No production database/server connection or deployment is part of this site-inventory task.
 - GitHub image publication and the known new-api/PostgreSQL export defects remain separate tracked work, not completed by site management.
+
+## Work commit
+
+`2dcc72be0d2414a37b901170a145278d09d873ad` — `feat(sites): add site inventory and shared backup job links`. The approved 30-file allowlist was checked against the exact staged paths. Unrelated work was excluded.

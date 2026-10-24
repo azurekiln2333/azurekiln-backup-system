@@ -28,8 +28,8 @@ This is one site-inventory deliverable, not several independent child tasks. Est
 - [x] Run required application/browser/layout/radius checks sequentially where real-tool contention matters.
 - [x] Dispatch `trellis-check` for full approved scope, tests, referential integrity, compatibility, error paths, UI behavior, and self-fixes confined to task-owned files.
 - [x] Update the verified frontend/backend site contracts and record evidence/limits.
-- [ ] Make the authorized path-limited commit; never stage unrelated metadata/auth/agent directories/user archives. Push `feat/site-management` after scoped bookkeeping.
-- [ ] Finish/archive only after every site acceptance criterion has current evidence; leave CI/new-api follow-ups separately recorded.
+- [x] Make the authorized path-limited commit; never stage unrelated metadata/auth/agent directories/user archives. Push `feat/site-management` after scoped bookkeeping.
+- [x] Finish/archive only after every site acceptance criterion has current evidence; leave CI/new-api follow-ups separately recorded.
 
 ## Required checks
 
@@ -48,3 +48,7 @@ This is one site-inventory deliverable, not several independent child tasks. Est
 - If implementation reveals a larger schema/UX requirement, return to planning and review it rather than expanding silently.
 - Current pre-existing unrelated work includes `server/auth.mjs`, parent task metadata, journals, local agent directories and the user ZIP. Preserve it and avoid broad staging/reset/cleanup.
 - The PostgreSQL adapter defects and GitHub image workflow remain separate unapproved implementation scopes; do not bundle them into site changes.
+
+## Completion
+
+Feature work committed as `2dcc72be0d2414a37b901170a145278d09d873ad`. All product gates passed before commit; the remaining closure operations are task archival, a scoped session record and the authorized normal push of `feat/site-management`.
