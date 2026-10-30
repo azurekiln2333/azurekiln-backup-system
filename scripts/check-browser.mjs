@@ -710,6 +710,18 @@ try {
   const directoryA = (await api('/jobs')).find(job => job.name === 'Directory A');
   assert.ok(directoryA, 'the isolated Directory A task exists for the site fixture');
   const directoryATags = [...directoryA.tags];
+  const repositoryUrls = [
+    'https://github.com/owner/primary',
+    'https://github.com/owner/primary-mirror',
+    'https://gitlab.com/azurekiln-team/cnb2api-panel',
+    'https://git.internal.example/Team/Panel.git?tab=readme#Install',
+    'https://github.com.example.org/team/mirror',
+  ];
+  const repositoryLabels = ['owner/primary', 'owner/primary-mirror', 'azurekiln-team/cnb2api-panel', 'Team/Panel.git', 'team/mirror'];
+  const repositoryHosts = new Set(repositoryUrls.map(href => new URL(href).hostname));
+  const repositoryRequests = [];
+  const recordRepositoryRequest = request => { if (repositoryHosts.has(new URL(request.url()).hostname)) repositoryRequests.push(request.url()); };
+  page.on('request', recordRepositoryRequest);
 
   // Create a site through the real editor: name, two addresses, a tag and a linked task.
   await page.getByRole('button', { name: '新增站点', exact: true }).first().click();
@@ -721,10 +733,10 @@ try {
   const siteTagInput = dialog().getByLabel('添加站点标签');
   await siteTagInput.fill('prod');
   await siteTagInput.press('Enter');
-  await dialog().getByRole('button', { name: '添加仓库' }).click();
-  await dialog().getByLabel('仓库地址 1').fill('https://github.com/owner/primary');
-  await dialog().getByRole('button', { name: '添加仓库' }).click();
-  await dialog().getByLabel('仓库地址 2').fill('https://github.com/owner/primary-mirror');
+  for (const [index, href] of repositoryUrls.entries()) {
+    await dialog().getByRole('button', { name: '添加仓库' }).click();
+    await dialog().getByLabel(`仓库地址 ${index + 1}`).fill(href);
+  }
   await dialog().getByLabel('站点备注').fill('主站，变更需通知运维');
   await dialog().locator('.site-job-option').filter({ has: page.getByText('Directory A', { exact: true }) }).getByRole('checkbox').check();
   await screenshot('desktop-site-editor');
@@ -736,11 +748,31 @@ try {
   assert.deepEqual(siteOne.backupJobIds, [directoryA.id], 'the saved site links the selected task');
   assert.deepEqual(siteOne.tags, ['prod'], 'site tags saved independently');
   assert.equal(siteOne.domains.length, 2, 'both addresses saved');
+  assert.deepEqual(siteOne.repositoryUrls, repositoryUrls, 'the editor persists GitLab, self-hosted and lookalike-host links alongside known providers');
   const jobAfterSiteSave = (await api('/jobs')).find(job => job.id === directoryA.id);
   assert.deepEqual(jobAfterSiteSave.tags, directoryATags, 'site tags never copy into job tags');
 
   // The list must show the name, the domain and the actual linked task name at a glance.
   const siteRow = name => page.locator('.site-row').filter({ hasText: name }).first();
+  const assertRepositoryLinks = async row => {
+    const links = row.locator('a.site-repo');
+    assert.deepEqual(await row.locator('.site-repo-label').allInnerTexts(), repositoryLabels, 'known and unrecognized repositories retain distinguishable labels');
+    assert.deepEqual(await links.evaluateAll(nodes => nodes.map(node => node.getAttribute('href'))), repositoryUrls, 'all repository links keep their full href');
+    assert.equal(await row.locator('.provider-mark[data-provider="github"]').count(), 2, 'both same-provider repositories retain their GitHub marks');
+    for (const [index, href] of repositoryUrls.entries()) {
+      const link = links.nth(index);
+      const accessibleName = await link.getAttribute('aria-label');
+      assert.ok(accessibleName.includes(repositoryLabels[index]) && accessibleName.includes(href), 'each repository has an accessible name with its label and complete target');
+      if (index < 2) {
+        assert.ok(accessibleName.includes('GitHub'), 'each known-provider repository names its provider');
+      } else {
+        assert.ok(accessibleName.startsWith('打开仓库 ') && !accessibleName.includes('undefined'), 'an unknown provider has a useful accessible name');
+        assert.equal(await link.locator('.provider-mark').count(), 0, 'GitLab, self-hosted and lookalike hosts have no guessed icon');
+      }
+      assert.equal(await link.getAttribute('target'), '_blank');
+      assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
+    }
+  };
   await siteRow('官网').waitFor();
   assert.equal(await siteRow('官网').locator('.site-name').innerText(), '官网');
   // The list shows exactly one address link: the first saved address rendered as its
@@ -748,14 +780,16 @@ try {
   assert.equal(await siteRow('官网').locator('.site-domain').count(), 1, 'only the first address is listed');
   assert.equal(await siteRow('官网').locator('.site-domain.site-host').innerText(), 'example.com', 'the first address is shown as its hostname');
   assert.equal(await siteRow('官网').locator('.site-domain.site-host').getAttribute('href'), 'https://example.com/', 'the address link keeps the complete href');
-  const repoLabels = await siteRow('官网').locator('.site-repo-label').allInnerTexts();
-  assert.equal(repoLabels.length, 2, 'both same-provider repositories are listed');
-  assert.deepEqual(await siteRow('官网').locator('.site-repo').evaluateAll(nodes => nodes.map(node => node.getAttribute('href'))), ['https://github.com/owner/primary', 'https://github.com/owner/primary-mirror'], 'repository links keep their full href');
-  const repoAria = await siteRow('官网').locator('.site-repo').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label') ?? ''));
-  assert.ok(repoAria.length === 2 && repoAria.every((label, index) => label.toLowerCase().includes('github') && label.includes(index === 0 ? 'primary' : 'primary-mirror')), `each repository link is labelled for accessibility with its provider and name (${repoAria.join(' | ')})`);
+  await assertRepositoryLinks(siteRow('官网'));
   assert.equal((await siteRow('官网').locator('.site-note').innerText()).includes('主站，变更需通知运维'), true, 'the note preview is visible');
   assert.ok((await siteRow('官网').locator('.site-job-name').allInnerTexts()).includes('Directory A'), 'linked task name is visible in the row');
   await screenshot('desktop-sites');
+  await navigate('overview');
+  const overviewSite = page.locator('.overview-site-list .site-row').filter({ hasText: '官网' }).first();
+  await overviewSite.waitFor();
+  await assertRepositoryLinks(overviewSite);
+  await screenshot('desktop-overview-repository-hosts');
+  await navigate('sites');
 
   // A second site shares the same task (many-to-many, no ownership transfer).
   await page.getByRole('button', { name: '新增站点', exact: true }).first().click();
@@ -795,6 +829,9 @@ try {
   await dialog().locator('.site-links .tag-chip').filter({ hasText: '官网' }).click();
   await page.getByRole('heading', { name: '编辑站点 · 官网' }).waitFor();
   assert.equal(new URL(page.url()).hash, '#sites', 'a reverse site chip navigates to the sites page');
+  for (const [index, href] of repositoryUrls.entries()) {
+    assert.equal(await dialog().getByLabel(`仓库地址 ${index + 1}`).inputValue(), href, 'editing retains recognized and unrecognized repository targets');
+  }
   await screenshot('desktop-site-reverse-chip');
   await page.getByRole('dialog').getByRole('button', { name: '取消' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
@@ -1020,13 +1057,17 @@ try {
   await page.locator('.main-content h1').waitFor();
   await siteRow('官网').waitFor();
   assert.equal(await page.locator('.site-row').count(), 1, 'sites persist across a reload');
+  await assertRepositoryLinks(siteRow('官网'));
   for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 800 }, { width: 768, height: 1024 }]) {
     await page.setViewportSize(viewport);
     await navigate('sites');
     await siteRow('官网').waitFor();
+    await assertRepositoryLinks(siteRow('官网'));
     await screenshot(`sites-${viewport.width}`);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  assert.deepEqual(repositoryRequests, [], 'saving and displaying repositories never contacts their hosts');
+  page.off('request', recordRepositoryRequest);
 
   assert.deepEqual(errors, [], 'Browser errors');
   // Derive the completed-backup count from the authoritative run history instead of

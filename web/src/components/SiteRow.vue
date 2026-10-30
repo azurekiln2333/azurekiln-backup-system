@@ -62,7 +62,7 @@ interface RepositoryLink { href: string; provider: keyof typeof providerLabels |
 
 const repositories = computed<RepositoryLink[]>(() => ((props.site.repositoryUrls ?? []) as string[]).map((value): RepositoryLink => {
   try {
-    const link = siteRepositoryLink(value) as { href: string; provider: keyof typeof providerLabels; label: string };
+    const link = siteRepositoryLink(value);
     return { href: link.href, provider: link.provider, label: link.label };
   } catch {
     return { href: '', provider: null, label: value };
@@ -108,7 +108,7 @@ const jobStatusClass = (job: Job) => job.lastRun?.status ?? (job.enabled ? 'pend
               target="_blank"
               rel="noopener noreferrer"
               :title="repo.href"
-              :aria-label="`在 ${providerLabels[repo.provider!]} 打开 ${repo.label}（${repo.href}）`"
+              :aria-label="repo.provider ? `在 ${providerLabels[repo.provider]} 打开 ${repo.label}（${repo.href}）` : `打开仓库 ${repo.label}（${repo.href}）`"
             ><ProviderMark v-if="repo.provider" :provider="repo.provider" /><span class="site-repo-label">{{ repo.label }}</span></a>
             <span v-else class="site-repo invalid" :title="repo.label"><span class="site-repo-label">{{ repo.label }}</span></span>
           </template>

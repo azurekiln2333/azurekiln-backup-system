@@ -140,14 +140,16 @@ Apply to `#sites`, site editing/filtering, reverse job associations, and indepen
 - `SiteInput` derives from shared `siteSchema`; `Site` adds `id`, `createdAt`, `updatedAt`. The arrays are `string[]`; do not let untyped JS transforms reduce them to `any`.
 - `SitesView` receives `{sites,jobs,loaded,jobsLoaded,loading,error,errorDetail?,busyId}` and emits `create|edit|remove|openJob|reload`.
 - `SiteEditor` receives `{site?,jobs,jobsLoaded,sites,save}` where `save(id,input) -> Promise<Site>` is App-owned. It emits `saved(site)|close`.
+- Shared `siteRepositoryLink(value) -> {href,provider,label}` can return a valid link with `provider:null`; `SiteRow` must carry that nullable provider through presentation.
 - App owns site APIs, request epochs, editor/delete state and the authoritative site list. Reverse job detail derives associated sites from this same list.
 
 ### 3. Contracts
 
 - Navigation includes `sites` in both `Page` and the registry, with the single shell h1 `站点管理`. Content remains inside existing panels with the radius scale and mobile drawer.
 - `SiteRow` is shared by the site list and overview preview. Its identity line shows the saved name plus only the first saved address's hostname, using shared `siteDomainHostname` for display and `siteDomainLink` for the complete safe href (including port/path/query/fragment). All saved addresses/order remain editable; invalid legacy values render as plain nonlinks. Use `noopener noreferrer` for new tabs. Address links are transparent navigation text, distinct from filled classification tags.
-- Show actual repository labels with bundled GitHub/CNB/Gitee/GitCode marks, a nonempty one-line plain-text notes preview, tags and real linked job names/types/latest states. Multiple same-provider links retain distinct accessible names and full targets; no provider network requests or runtime favicon dependency. Full notes are accessible in the editor. Standard rows use natural layout, not fixed-height clipping; long/many-link content can grow.
+- Show actual repository labels, adding bundled GitHub/CNB/Gitee/GitCode marks only when exact-host recognition succeeds. Unknown hosts such as GitLab or a self-hosted forge remain ordinary clickable text links with no icon; a known-name lookalike receives no provider branding. Validity comes from shared URL validation, independently of icon availability. Accessible labels must include the repository path and full target even when the provider is null, without `undefined`, `null`, or a fabricated platform name. Multiple same-provider links retain distinct accessible names and full targets; no provider network requests or runtime favicon dependency. Show a nonempty one-line plain-text notes preview, tags and real linked job names/types/latest states. Full notes are accessible in the editor. Standard rows use natural layout, not fixed-height clipping; long/many-link content can grow.
 - Site search covers name/domain/tag/repository URL/notes; site tags remain independent of job tags. Linked/unlinked counts and filtering use saved `backupJobIds`, even when job details are unavailable. Editor uses shared metadata limits/defaults, retains failed drafts and preserves omitted versus explicit-clear semantics.
+- Repository editor help describes HTTP(S) repository URLs and optional icons for recognized platforms; it must not advertise the icon-provider list as an exclusive set of allowed hosts.
 - Overview keeps its existing title, four metric meanings, current execution, runtime environment and recent runs. Only its job preview becomes `站点列表`, showing up to six sites in saved order, total count, all-sites navigation and a create-site empty action. Normal task operations remain accessible. Render independently successful site/job data while overview fails or is pending; unavailable summaries must not invent zero/idle states. Latest attempt does not certify whole-site recoverability.
 - Load sites and jobs independently of overview/runs. A rejected sibling request must not suppress the site request. `loaded` distinguishes a successfully empty inventory from a list never read; `jobsLoaded` distinguishes unresolved details from deletion. Keep the refresh guard active until all independent loads settle, and do not let another request's success clear a failure notice.
 - Authentication boot waits for `/auth/status` and installs CSRF, then starts the resource refresh without awaiting it. Never keep `authLoading` true while dashboard resources load: a held `/overview` request must still allow the authenticated shell and independently loaded sites/jobs to render.
@@ -166,25 +168,26 @@ Apply to `#sites`, site editing/filtering, reverse job associations, and indepen
 | Job disappears during editing | Keep the draft; show actionable missing-link copy and an explicit removal action |
 | Site disappears during editing | Keep the draft and warn; do not recreate it silently |
 | Invalid domain/tag or save failure | Shared field validation/API error; entered values remain |
+| Valid repository with no recognized provider | Save normally; render its full safe href and useful accessible name with no `ProviderMark` |
 | No search/tag matches | Separate no-match state and clear-filter action |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: two sites share a task, list it under both, and job detail lists both sites. Unlinking one leaves the other intact.
+- Good: two sites share a task, list it under both, and job detail lists both sites. Unlinking one leaves the other intact. GitLab/self-hosted links render beside a recognized GitHub link; only the recognized link has a provider mark.
 - Base: a saved site can start without addresses/tasks, and an installation with no sites shows the create shortcut after loading succeeds.
-- Bad: `/overview` rejects before `/sites` is attempted, so the UI claims there are no sites; or `/jobs` fails and existing links are called deleted.
+- Bad: `/overview` rejects before `/sites` is attempted, so the UI claims there are no sites; `/jobs` fails and existing links are called deleted; or a valid unknown repository becomes a nonlink, gets a guessed icon, or exposes `undefined` in its accessible name.
 
 ### 6. Tests Required
 
-`check:browser` exercises real site CRUD/shared links, name/domain/tag/repository-only/notes-only filtering, exact full href with hostname-only display, all editor addresses, literal multiline remarks, same-provider repository distinction, forward/reverse navigation, retries, polling/failed-save draft preservation, safe unlink/delete, persistence and independent failed/pending overview/job requests. Keep intentional HTTP failures scoped in console-error handling; do not suppress unrelated browser errors.
+`check:browser` exercises real site CRUD/shared links, name/domain/tag/repository-only/notes-only filtering, exact full href with hostname-only display, all editor addresses, literal multiline remarks, same-provider repository distinction, forward/reverse navigation, retries, polling/failed-save draft preservation, safe unlink/delete, persistence and independent failed/pending overview/job requests. Repository coverage must save the reported GitLab link and a self-hosted link, assert their hrefs/accessibility/no-icon behavior in both list and overview, and retain recognized-provider icons. A known-name lookalike must receive no icon. Keep intentional HTTP failures scoped in console-error handling; do not suppress unrelated browser errors.
 
 The layout matrix has **seven pages × four widths × two themes = 56 asserted renders**, plus existing supplements and density evidence. Populate the eight standard sites and shared tasks through authenticated APIs; assert site/hostname/repository/job visibility and complete-row density. Reuse production guards for name/hostname/repository/job visibility and oversized-padding fault injections. Retain shell/containment/scroll/radius checks and inspect desktop/mobile/light/dark screenshots.
 
 ### 7. Wrong vs Correct
 
-Wrong: `Promise.all([overview,jobs,runs]).then(loadSites)`, treating `jobs=[]` after a failed fetch as deletion, or replacing a mounted editor's draft whenever sites refresh.
+Wrong: `Promise.all([overview,jobs,runs]).then(loadSites)`, treating `jobs=[]` after a failed fetch as deletion, replacing a mounted editor's draft whenever sites refresh, or using an absent repository provider as an invalid-link signal.
 
-Correct: independently load each resource with honest success/error flags, preserve saved association IDs, and keep the editor's mounted draft separate from refreshed authoritative records.
+Correct: independently load each resource with honest success/error flags, preserve saved association IDs, and keep the editor's mounted draft separate from refreshed authoritative records. Render a validated repository href regardless of provider; guard `ProviderMark` and platform-name lookup with `if (repo.provider)` and use a generic repository accessible label otherwise.
 
 ## Single-file editor and task cloning
 

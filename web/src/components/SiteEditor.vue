@@ -216,7 +216,7 @@ async function save() {
               </div>
               <div class="domain-actions">
                 <button type="button" class="button secondary small" :disabled="form.repositoryUrls.length >= SITE_REPOSITORY_LIMIT" @click="form.repositoryUrls.push('')"><Plus :size="15" />添加仓库</button>
-                <span class="muted">支持 GitHub、CNB、Gitee、GitCode，最多 {{ SITE_REPOSITORY_LIMIT }} 个。</span>
+                <span class="muted">支持各平台的 HTTP(S) 仓库地址，最多 {{ SITE_REPOSITORY_LIMIT }} 个；未识别平台不显示图标。</span>
               </div>
               <p v-if="repositoryPreview.length" class="field-hint">将显示：<span class="mono">{{ repositoryPreview.join('、') }}</span></p>
               <small v-if="errors.repositories" class="field-error">{{ errors.repositories }}</small>

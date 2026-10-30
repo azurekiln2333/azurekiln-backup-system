@@ -339,7 +339,45 @@ test('site repositories keep validated order, provider and exact href while note
   assert.deepEqual(foreignKeyViolations(path.join(context.config.dataDir, 'state.sqlite')), []);
 });
 
-test('site repositories reject unsupported, deceptive, credential and malformed values without writes', async (t) => {
+test('unrecognized repository hosts persist through create, edit and restart without provider branding or probing', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    assert.equal(new URL(input).origin, context.config.publicUrl, 'saving repository metadata never fetches an external host');
+    return originalFetch(input, options);
+  });
+  const gitlab = 'https://gitlab.com/azurekiln-team/cnb2api-panel';
+  const selfHosted = 'https://git.internal.example/Team/Deep/Panel.git?tab=readme#Install';
+  const unknownUrls = [gitlab, selfHosted, 'https://github.com.example.org/team/mirror', 'https://evilgithub.com/owner/repo'];
+  const site = await createSite(context, {
+    name: 'Any repository host',
+    repositoryUrls: [gitlab, 'git.internal.example/Team/Deep/Panel.git?tab=readme#Install', selfHosted, ...unknownUrls.slice(2), 'https://github.com/owner/known'],
+    notes: 'keep this note',
+  });
+  assert.deepEqual(site.repositoryUrls, [...unknownUrls, 'https://github.com/owner/known'], 'unknown hosts normalize and deduplicate in first order alongside known hosts');
+  assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data.repositoryUrls, site.repositoryUrls);
+  assert.deepEqual((await context.request('/api/sites')).data[0].repositoryUrls, site.repositoryUrls);
+  for (const href of unknownUrls) {
+    assert.equal(siteRepositoryProvider(href), null, `${href} has no recognized icon provider`);
+    assert.equal(siteRepositoryLink(href).href, href, 'a valid unknown provider still projects to a clickable target');
+    assert.equal(siteRepositoryLink(href).provider, null, 'lookalike host names never inherit known provider branding');
+  }
+  assert.deepEqual(siteRepositoryLink(gitlab), { href: gitlab, provider: null, label: 'azurekiln-team/cnb2api-panel' });
+  assert.equal(siteRepositoryProvider('https://github.com/owner/known'), 'github');
+
+  const updatedUrls = ['http://forge.internal.example/Group/Repo.git?ref=Main#Readme', selfHosted, gitlab];
+  const updated = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: updatedUrls } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.data));
+  assert.deepEqual(updated.data.repositoryUrls, updatedUrls, 'editing preserves explicit HTTP, deep case-sensitive paths, queries, fragments and order');
+  assert.equal(updated.data.notes, site.notes, 'repository changes preserve unrelated metadata');
+  await context.shutdown();
+  await context.boot();
+  assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data.repositoryUrls, updatedUrls, 'unknown repository hosts remain saved after reopening SQLite');
+});
+
+test('site repositories reject unsupported schemes, credentials and malformed values without writes', async (t) => {
   const context = await fixture();
   t.after(() => context.close());
   await context.setup();
@@ -349,10 +387,8 @@ test('site repositories reject unsupported, deceptive, credential and malformed 
     assert.equal(response.status, 400, `${label}: expected 400, got ${response.status} ${JSON.stringify(response.data)}`);
     assert.ok(response.data?.error?.code, `${label}: error carries a stable code`);
   };
-  await bad('https://gitlab.com/owner/repo', 'unsupported host');
-  await bad('https://github.com.evil.example/owner/repo', 'deceptive suffix host');
-  await bad('https://evilgithub.com/owner/repo', 'deceptive prefix host');
   await bad('https://user:pass@github.com/owner/repo', 'embedded credentials');
+  await bad('https://user:pass@git.internal.example/owner/repo', 'credentials on an unrecognized host');
   await bad('ftp://github.com/owner/repo', 'unsupported scheme');
   await bad('javascript:alert(1)', 'javascript scheme');
   await bad('https://github.com/owner', 'missing repository path');
@@ -423,7 +459,7 @@ test('PATCH clears repositories and notes independently without touching domains
   assert.deepEqual(cleared.data.backupJobIds, [job.id]);
 
   const before = (await context.request(`/api/sites/${site.id}`)).data;
-  const rejected = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://evil.example/owner/repo'], notes: 'should not apply' } });
+  const rejected = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://user:pass@git.internal.example/owner/repo'], notes: 'should not apply' } });
   assert.equal(rejected.status, 400, 'an invalid repository write is rejected');
   const after = (await context.request(`/api/sites/${site.id}`)).data;
   assert.deepEqual(after, before, 'a rejected repository write leaves metadata, timestamps and links intact');

@@ -84,6 +84,7 @@ Apply when changing site CRUD, shared site validation, job deletion or system-st
 ### 2. Signatures
 
 - `siteSchema`, `tagListSchema`, `siteDomainSchema`, `normalizeSiteDomain(input)`, `siteDomainLink(value) -> {href,label}` live in `shared/contracts.mjs`.
+- Repository helpers share the same boundary: `normalizeSiteRepository(input) -> string`, `siteRepositorySchema`, `siteRepositoryProvider(value) -> 'github'|'cnb'|'gitee'|'gitcode'|null`, and `siteRepositoryLink(value) -> {href,provider,label}` where `provider` has that nullable union.
 - Store: `listSites()`, `getSite(id)`, `saveSite(input,id?)`, `deleteSite(id)`.
 - Authenticated routes: `GET /api/sites`, `POST /api/sites` (201), `GET/PATCH /api/sites/:id` (200), `DELETE /api/sites/:id` (204).
 - SQLite: `sites(id PRIMARY KEY,data)`; `site_jobs(site_id REFERENCES sites ON DELETE CASCADE,job_id REFERENCES jobs ON DELETE CASCADE,PRIMARY KEY(site_id,job_id))`; index `site_jobs_job(job_id)`. Do not make `job_id` unique.
@@ -92,7 +93,7 @@ Apply when changing site CRUD, shared site validation, job deletion or system-st
 
 - Input is `{name,domains,tags,repositoryUrls,notes,backupJobIds}`. Name is trimmed, required, at most 100 characters. Arrays default to `[]`; domains, repositories and links may be empty. Notes default to `''`. Output adds server-owned `id`, `createdAt`, `updatedAt`, with no embedded private jobs or secrets. Both public `siteView` and saved JSON metadata must explicitly include new metadata; shared schema defaults alone do not persist it.
 - Domains accept up to 20 entries, each at most 2048 characters before and after normalization. Bare hosts default to HTTPS; URL parsing normalizes host/default port while preserving path/query/fragment semantics. Deduplicate identical canonical hrefs, preserving first order. Validation performs no network requests.
-- Repositories accept up to 20 HTTP(S) browser URLs of at most 2048 characters. Exact recognized hosts are github.com, cnb.cool, gitee.com, gitcode.com and hub.gitcode.com. Bare addresses default to HTTPS; explicit HTTP, submitted alias, case-sensitive path/query/fragment and `.git` survive normalization. Require at least owner/group plus repository path, reject credentials/control whitespace/backslashes/nondefault ports, deduplicate canonical hrefs in order and never probe providers. Shared `normalizeSiteRepository`, `siteRepositorySchema`, `siteRepositoryProvider` and `siteRepositoryLink` own validation and projection.
+- Repositories accept up to 20 HTTP(S) browser URLs of at most 2048 characters on any host; provider recognition never gates validity. `SITE_REPOSITORY_HOSTS` is an exact-host icon lookup for github.com, cnb.cool, gitee.com, gitcode.com and hub.gitcode.com only. Other valid hosts, including GitLab, self-hosted repositories and known-name lookalikes, produce `provider:null` and remain valid navigation links. Bare addresses default to HTTPS; explicit HTTP, submitted alias, case-sensitive path/query/fragment and `.git` survive normalization. Require at least owner/group plus repository path, reject credentials/control whitespace/backslashes/nondefault ports, deduplicate canonical hrefs in order and never probe providers. Use normalization/schema validation to determine validity; a null provider alone does not mean invalid input.
 - Notes are trimmed plain text of at most 500 characters; preserve internal newlines. Omitted PATCH fields preserve prior data, `repositoryUrls:[]` and `notes:''` clear independently, and invalid input rejects the whole metadata/link write. Legacy records missing either field read with its empty default without a startup bulk rewrite.
 - Tags share the existing 10 × 32-character rules, with independent site/job values. Job IDs are bounded to 200 entries of 1–100 characters and deduplicated in request order. Typed JS transforms must expose `string[]` output to TypeScript consumers.
 - `site_jobs` is the sole association source. Site JSON holds metadata/timestamps only. `backupJobIds` is projected on every read; never copy it into job JSON.
@@ -107,24 +108,27 @@ Apply when changing site CRUD, shared site validation, job deletion or system-st
 | Unauthenticated request / mutation without CSRF or with foreign Origin | Existing 401 / 403 authentication boundary |
 | Missing site on GET/PATCH/DELETE | 404 `SITE_NOT_FOUND` |
 | Invalid field, unsupported URL scheme, URL credentials or oversized canonical href | 400 `VALIDATION_FAILED`, with field issues |
+| Valid repository URL on an unrecognized host | Accept on create/PATCH; persist/read the canonical href with no provider requirement |
 | Any unknown job ID | 400 `SITE_JOB_NOT_FOUND`; prior metadata, timestamp and links unchanged |
 | Delete linked job | Existing active/system-job protections still apply; successful deletion cascades links from every site only |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: site A links DB + files; site B links the same DB. Unlinking A retains B and both jobs.
+- Good: site A links DB + files; site B links the same DB. Unlinking A retains B and both jobs. A GitLab/self-hosted repository URL persists alongside a recognized GitHub URL.
 - Base: a named site without addresses/jobs is valid; an old installation initially lists no sites.
-- Bad: one invalid job ID commits a new name but deletes old links, a site delete deletes backup data, or a restore drops the relation table.
+- Bad: one invalid job ID commits a new name but deletes old links, a site delete deletes backup data, a restore drops the relation table, or an absent provider icon blocks a valid repository URL.
 
 ### 6. Tests Required
 
 `tests/sites.test.mjs` must exercise real HTTP/SQLite CRUD, both many-to-many directions, merge/replace/clear semantics, authoritative reads after rejected writes, auth/CSRF, public payloads, site/job deletion safety, reopen/legacy migration, current and old restore, and empty `PRAGMA foreign_key_check`. With real tools, export an actual encrypted system backup, download it, stage/import the exact archive, and compare saved inventory and relations. Snapshot-only fixtures do not establish archive export/decryption evidence.
 
+Repository regressions must create/edit/read the reported GitLab URL and a self-hosted URL, preserve full canonical targets/order/deduplication, and assert null providers for unknown and known-name lookalike hosts. Retain independent malformed/unsafe URL and count/length rejection checks; tests must not depend on repository-host availability.
+
 ### 7. Wrong vs Correct
 
-Wrong: store `backupJobIds` in both site JSON and a join table, use `UNIQUE(job_id)`, or apply partial-schema defaults before merging a PATCH.
+Wrong: store `backupJobIds` in both site JSON and a join table, use `UNIQUE(job_id)`, apply partial-schema defaults before merging a PATCH, or reject a repository because `siteRepositoryProvider(value) === null`.
 
-Correct: project IDs from the composite-key relation, and merge → validate → transactionally replace metadata and links. A failed write leaves the prior authoritative record intact.
+Correct: project IDs from the composite-key relation, and merge → validate → transactionally replace metadata and links. A failed write leaves the prior authoritative record intact. Validate repository navigation with `siteRepositorySchema`; a valid projection such as `{href:'https://gitlab.com/team/repo',provider:null,label:'team/repo'}` needs no provider integration.
 
 ## Single-file backups and paused job cloning
 

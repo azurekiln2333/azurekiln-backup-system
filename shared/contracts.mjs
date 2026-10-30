@@ -107,10 +107,11 @@ export const siteDomainSchema = z.string().trim().min(1).max(SITE_DOMAIN_MAX_LEN
     catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message }); return z.NEVER; }
   });
 
-// Repository navigation metadata: browser links on recognized providers, never cloned, probed or fetched.
+// Repository navigation metadata: HTTP(S) browser links, never cloned, probed or fetched.
 export const SITE_REPOSITORY_LIMIT = 20;
 export const SITE_REPOSITORY_MAX_LENGTH = 2048;
 export const SITE_NOTES_MAX_LENGTH = 500;
+// Exact-host icon lookup only; unrecognized hosts remain valid repository links.
 export const SITE_REPOSITORY_HOSTS = Object.freeze({
   'github.com': 'github',
   'cnb.cool': 'cnb',
@@ -122,8 +123,8 @@ const SITE_REPOSITORY_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 // Prototype-safe exact-host lookup: a frozen literal object would otherwise answer for keys such as `__proto__`.
 const repositoryProviderForHost = (hostname) => (Object.hasOwn(SITE_REPOSITORY_HOSTS, hostname) ? SITE_REPOSITORY_HOSTS[hostname] : null);
 
-// Canonical repository URL boundary. Bare provider addresses default to HTTPS; an explicitly supplied http:// is
-// preserved as submitted. Only exact recognized hosts are accepted; the target keeps its case-sensitive
+// Canonical repository URL boundary, independent of optional provider icons. Bare addresses default to HTTPS;
+// an explicitly supplied http:// is preserved as submitted. The target keeps its case-sensitive
 // path/query/fragment and .git suffix, and no path cutting or alias rewriting happens here.
 /** @param {string} input @returns {string} */
 export function normalizeSiteRepository(input) {
@@ -131,12 +132,11 @@ export function normalizeSiteRepository(input) {
   if (!raw) throw new Error('仓库地址不能为空。');
   if (/[\0-\x1f\x7f \\]/.test(raw)) throw new Error('仓库地址不能包含空格、反斜杠或控制字符。');
   const candidate = SITE_REPOSITORY_SCHEME.test(raw) ? raw : raw.startsWith('//') ? `https:${raw}` : `https://${raw}`;
-  if (candidate.slice(candidate.indexOf('://') + 3).startsWith('/')) throw new Error('仓库地址必须是受支持平台的仓库 URL。');
+  if (candidate.slice(candidate.indexOf('://') + 3).startsWith('/')) throw new Error('仓库地址必须是有效的 HTTP(S) 仓库 URL。');
   let url;
-  try { url = new URL(candidate); } catch { throw new Error('仓库地址必须是受支持平台的仓库 URL。'); }
+  try { url = new URL(candidate); } catch { throw new Error('仓库地址必须是有效的 HTTP(S) 仓库 URL。'); }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('仓库地址只支持 http:// 或 https://。');
   if (url.username || url.password) throw new Error('仓库地址不能包含用户名或密码。');
-  if (!repositoryProviderForHost(url.hostname)) throw new Error(`仓库地址的主机不受支持，仅支持 ${Object.keys(SITE_REPOSITORY_HOSTS).join('、')}。`);
   // The URL parser already removed default ports, so any remaining port is nondefault and rejected.
   if (url.port) throw new Error('仓库地址不能使用非默认端口。');
   // Require owner/group plus repository path; nested/deep paths stay allowed and are never cut.
@@ -152,9 +152,9 @@ export function siteRepositoryProvider(value) {
   catch { return null; }
 }
 
-// Safe repository projection: canonical href, derived provider and a distinguishable owner/repository path label.
+// Safe repository projection: canonical href, optional provider and a distinguishable owner/repository path label.
 // Throws on invalid input so presentation boundaries render a readable nonlink instead of an unsafe href.
-/** @param {string} value @returns {{ href: string, provider: 'github'|'cnb'|'gitee'|'gitcode', label: string }} */
+/** @param {string} value @returns {{ href: string, provider: 'github'|'cnb'|'gitee'|'gitcode'|null, label: string }} */
 export function siteRepositoryLink(value) {
   const href = normalizeSiteRepository(value);
   const url = new URL(href);
