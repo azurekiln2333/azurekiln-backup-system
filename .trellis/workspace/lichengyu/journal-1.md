@@ -59,6 +59,78 @@ Reviewed p5 newapi-data-backup: verified SQLite online-backup snapshot, path san
 [OK] **Completed**
 
 
+## Session 4: 布局重构收尾：8px 圆角文档同步与任务归档
+<!-- trellis-session: v=2 fp=2eaac85dae07d9e2 -->
+
+**Date**: 2026-10-20
+**Task**: 布局重构收尾：8px 圆角文档同步与任务归档
+**Branch**: `main`
+
+### Summary
+
+同步 prd/design/implement/acceptance 到最终 8px 圆角约束并勾选 AC，追加主管独立复验结果；归档 10-20-newapi-layout-shell 为 completed。
+
+### Main Changes
+
+## 布局重构收尾：文档同步 + 归档
+
+### 文档同步（bf6e79f）
+
+最终独立复验发现本任务 prd.md 仍写 `--workspace-radius = 11.2px`，与 8px 实现不一致。已逐项同步本任务四份文档：
+
+- `prd.md`：圆角段改为「工作区圆角最终定为 `var(--radius-lg)` = 8px」，并明确记录 11.2px 提案因违反父任务 ≤8px 硬约束且未获授权而撤销，不存在该别名；R1 `.workspace` 改用 `var(--radius-lg)`；R3 `.panel` 去掉 `overflow: hidden` 并改为只裁剪首/末子元素圆角；AC 全部按实测勾选。
+- `design.md` §3.1：`.panel` 示例同步为无 `overflow: hidden` 的最终形态，附原因注释。
+- `implement.md`：token 清单删除 `--panel-radius` / `--workspace-radius`；「Known decision」段改写为最终 8px 结论；执行清单 23 项全部勾选。
+- `acceptance.md`：追加主管独立复验结果表，并将 8px 记为最终约束。
+
+### 留存证据（主管在 ee6488c 上独立复验）
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm run build` | pass |
+| `npm run check` | pass |
+| `node scripts/ui-radius-audit.mjs` | pass |
+| `git diff --check` | clean |
+| `LAYOUT_PORT=16406 npm run check:layout` | pass — 6 页 × 4 宽度 × 2 主题 = 48 renders / 52 screenshots；Overview task rows 8/8 visible |
+
+### 归档（afe7eb0）
+
+`task.py archive 10-20-newapi-layout-shell --no-commit --skip-branch-validation`
+
+- 归档目录：`.trellis/tasks/archive/2026-10/10-20-newapi-layout-shell/`
+- task 状态：`completed`
+- 首次归档被分支校验拒绝（branch 与 base_branch 同为 `main`，本任务从未单独开分支，直接提交在 main），按脚本提示使用 `--skip-branch-validation`。
+- `--no-commit` 生效：脚本未提交任何内容，git 将其识别为纯 rename，父任务 `task.json` 保持其他窗口的既有改动未入暂存。
+
+### 约束遵守
+
+未提交父 `task.json`、`server/auth.mjs`、`.trellis/workspace/`、`board.md`、`.artifacts/`、agent 工具目录、zip。仅归档本任务，未动其他旧任务。未 push、未 amend。
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fa4c569` | refactor(ui): adopt newapi inset shell with 208px rail |
+| `6772cb4` | refactor(ui): adopt panel, stats and content-grid primitives |
+| `217d70b` | refactor(ui): move jobs, files, storage and settings pages onto the panel system |
+| `58ec372` | fix(ui): restore the overview task row layout and brand accessible name |
+| `e1b94bd` | test(ui): require visible overview task rows in every viewport and theme |
+| `bf6e79f` | docs(task): sync layout shell docs to the final 8px radius and checked acceptance |
+
+### Testing
+
+- [OK] npm run check / build / test / check:layout / check:browser / ui-radius-audit 全绿
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 父任务 10-18-ui-revamp-newapi-backup 继续其余子任务；本次未提交 workspace/board。
+
+
 ## Session 5: Site inventory and shared backup job links
 <!-- trellis-session: v=2 fp=b65b62a51633a68b -->
 
@@ -124,3 +196,44 @@ Implemented and independently accepted site repository links/notes, compact site
 ### Next Steps
 
 - Handle GHCR image CI and new-api adapter follow-ups in their separate tasks.
+
+
+## Session 7: 工作区清理：忽略 AI 工具目录并收尾仓库主机回退任务
+<!-- trellis-session: v=2 fp=4f4fff659b95af8d -->
+
+**Date**: 2026-10-30
+**Task**: 工作区清理：忽略 AI 工具目录并收尾仓库主机回退任务
+**Branch**: `fix/repository-host-fallback`
+
+### Summary
+
+忽略本地 AI 工具/IDE 配置目录，用标准化提交语句分组提交待处理变更，归档 10-25-repository-host-fallback 使工作区干净。
+
+### Main Changes
+
+- 新增 .gitignore 规则覆盖 .agent/ .claude/ .codebuddy/ .codex/ .cursor/ .dsh/ .kimi-code/ .opencode/ .pi/ .trae/ .zcode/ 共 11 个工具目录。
+- 按 commit-plan.md 提交仓库链接支持任意 HTTP(S) 主机的修复（contracts/SiteRow/SiteEditor/tests/check-browser/README/spec）。
+- 提交 api-tokens 与 ghcr-image-pipeline 任务的 PRD/design/implement/research 规划文档。
+- 确认 server/auth.mjs 为 core.autocrlf=true 导致的行尾假改动，git add 后无实际变更。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b71964a` | chore: ignore local AI tool and IDE configuration directories |
+| `70f2e26` | fix: accept repository links from unrecognized hosts |
+| `8973a14` | chore(tasks): track api-tokens and image pipeline planning artifacts |
+| `ba374ef` | chore(task): archive 10-25-repository-host-fallback |
+
+### Testing
+
+- [OK] node --test tests/sites.test.mjs 16/16 通过；npm run check、npm run build、node --check scripts/check-browser.mjs 全部通过。
+- [OK] 全量 npm test 未运行，既有 executor 用例的套件敏感失败仍未定位，未声称全绿。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 继续 10-18-api-tokens / 10-24-ghcr-image-pipeline / 10-18 子任务。
