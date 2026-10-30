@@ -8,3 +8,16 @@ dist/
 *.log
 coverage/
 .tmp/
+
+# Local AI coding tool / IDE configuration
+.agent/
+.claude/
+.codebuddy/
+.codex/
+.cursor/
+.dsh/
+.kimi-code/
+.opencode/
+.pi/
+.trae/
+.zcode/
