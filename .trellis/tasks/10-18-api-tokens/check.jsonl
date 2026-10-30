@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Security/contract checklist to review the new auth paths against: credential sealing, redaction, error matrix, tests required."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend quality check section: npm test / check / build / check:browser expectations and what to inspect."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Frontend contract checklist: API helpers, server-authoritative CRUD, accessible controls, responsive screenshots."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Changes span server, shared contracts (unused), types, components and tests; use for cross-layer consistency review."}
+{"file": ".trellis/tasks/10-18-api-tokens/research/token-feasibility.md", "reason": "Verify each security point in the PRD is actually satisfied (one-time plaintext, hash-only storage, constant-time compare, no token management, no plaintext in logs)."}
+{"file": ".trellis/tasks/10-18-api-tokens/design.md", "reason": "Acceptance source for the implemented contract: allowlist contents, scope semantics, error codes, CSRF reasoning."}
+{"file": ".trellis/tasks/10-18-api-tokens/implement.md", "reason": "Review gates G1-G5 to verify before sign-off."}

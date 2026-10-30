@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"Deployment and infrastructure scope plus required quality checks"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Persistence, deployment export, secret handling, runtime tools and backup integration contracts"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Existing browser/layout verification contract when establishing release gates"}
+{"file":".trellis/spec/guides/index.md","reason":"Cross-layer configuration consistency and reuse rules"}
+{"file":".trellis/tasks/10-24-ghcr-image-pipeline/research/dual-platform-release.md","reason":"Expanded GitHub/CNB release, stable channel, updater, live-tool and four-Pi coordination evidence; supersedes old policy"}

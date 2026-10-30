@@ -22,7 +22,8 @@
     "10-18-jobs-batch-grouping",
     "10-18-ui-shell-newapi",
     "10-18-api-tokens",
-    "10-18-newapi-data-backup"
+    "10-18-newapi-data-backup",
+    "10-20-newapi-layout-shell"
   ],
   "parent": null,
   "relatedFiles": [],

@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-lifecycle.md", "reason": "Backend runtime contracts: auth middleware chain, error/redaction rules, tests required, and where token contracts must be added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend quality gate: which commands must pass and what to verify before reporting done."}
+{"file": ".trellis/spec/frontend/ui-api.md", "reason": "Console/API contracts: api()/write() helpers, CRUD-from-server-state rule, nav is hash-based, no duplicate metrics."}
+{"file": ".trellis/tasks/10-18-api-tokens/research/token-feasibility.md", "reason": "Feasibility conclusion, newapi reference fields/UX, the 8 risks (CSRF, escalation, leakage, throttle, file ownership) and the minimal scope to implement."}
+{"file": ".trellis/tasks/10-18-api-tokens/design.md", "reason": "Authoritative technical design: persistence decision, token format, auth/app.mjs wiring order, allowlist table, HTTP contract, frontend component design."}
+{"file": ".trellis/tasks/10-18-api-tokens/implement.md", "reason": "Ordered execution checklist, commit messages, review gates and rollback points."}
+{"file": ".trellis/tasks/10-18-ui-revamp-newapi-backup/prd.md", "reason": "Global rules: path-limited commits, file ownership, board protocol, validation commands, port conventions."}

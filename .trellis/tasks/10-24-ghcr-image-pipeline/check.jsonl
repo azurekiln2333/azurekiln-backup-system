@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Infrastructure quality gates"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Ensure image-first migration preserves persistent data, secret and source contracts"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Verify existing regression gates remain meaningful and run on the CI browser path"}
+{"file":".trellis/tasks/10-24-ghcr-image-pipeline/research/dual-platform-release.md","reason":"Review both platforms, release/update channel safety, actual tools, updater scope, publication evidence and preserved local work"}
