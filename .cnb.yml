@@ -1,0 +1,354 @@
+# CNB (云原生构建) pipeline for azurekiln-backup-system.
+#
+# Policy:
+#   * `main` push, `api_trigger` and pull requests only verify. They can never
+#     publish anything.
+#   * A `v<package.json version>` tag runs ONE ordered pipeline:
+#       validate tag -> verify -> publish (image + Release + assets)
+#     Publication stages are literal successors of verification inside the same
+#     pipeline, so an image can never be pushed without the application checks
+#     above them passing.
+#
+# This deliberately does NOT copy the reference cnb2api-panel layout, which
+# declares `publish-release` and `publish-image` as two independent sibling
+# pipelines that only re-run tag validation. The reference's image pipeline can
+# therefore publish an image that never passed `npm test`; that bypass is not
+# reproduced here.
+#
+# Shared, cross-platform logic is reused rather than duplicated:
+#   * scripts/prepare-release.mjs  tag/version/channel rules + deployment bundle
+#   * scripts/ci-verify.sh         verification entrypoint (tools, tests, browser)
+#   * scripts/check-image.sh       disposable image smoke check
+#
+# ---------------------------------------------------------------------------
+# VERIFIED against primary CNB docs (https://docs.cnb.cool, fetched 2026-10-26)
+# ---------------------------------------------------------------------------
+#   * Branch/tag selectors, glob and `$` fallback:  build/trigger-rule.md
+#     - `$` is a FALLBACK-ONLY match ("不被 glob 匹配的分支"), not "all branches".
+#     - `tag_push` is declared under a glob branch key (`v*:`), so tags are
+#       matched by the same selector syntax as branches.
+#     - `pull_request` = "PR 创建、重新打开、源分支 push" (no Tag variant).
+#   * `event` object keys are closed (additionalProperties: false) and include
+#     push/api_trigger/pull_request/tag_push: docs.cnb.cool/conf-schema-zh.json.
+#   * Multi-arch: "默认支持多架构构建能力，直接使用 docker buildx 无需额外配置"
+#     and "无需开启 rootlessBuildkitd": build/grammar.md; artifact/docker.md.
+#   * Registry auth: `docker login -u ${CNB_TOKEN_USER_NAME} -p "${CNB_TOKEN}"
+#     ${CNB_DOCKER_REGISTRY}`: artifact/docker.md.
+#   * Receiving image path `docker.cnb.cool/${CNB_REPO_SLUG_LOWERCASE}`
+#     (`${CNB_REPO_SLUG}` = "group_slug/repo_name"): artifact/docker.md,
+#     build/build-in-env.md.
+#   * `git:release` options (tag/title/descriptionFromFile/preRelease/latest/
+#     overlying) and supported events incl. tag_push/api_trigger:
+#     build/internal-steps/git/release.md. It cannot attach files ("该内置任务
+#     不支持上传附件"), and defaults to `overlying: false` = delete then recreate.
+#   * `cnb:read-file` takes `options.filePath` and exports via `exports`:
+#     build/internal-steps/cnb/read-file.md.
+#   * Pipeline `lock.key` / `wait` / `timeout`: build/grammar.md.
+#   * Pipeline `env` values are substituted inside `script` bodies: build/env.md.
+#   * File validated (0 errors) against https://docs.cnb.cool/conf-schema-zh.json.
+#
+# ---------------------------------------------------------------------------
+# NOT VERIFIED (no CNB account, remote run or registry access in this session)
+# ---------------------------------------------------------------------------
+#   * Whether `api_trigger`/`pull_request` are also matched against Tag pushes,
+#     and whether TWO pipelines launch when both `v*` and `$` match. A tag can
+#     legitimately run the release pipeline *and* the `reject-unexpected-tag`
+#     pipeline; the release pipeline rejects a non-`v<version>` tag itself as
+#     well, so the safety property does not depend on which one fires.
+#   * Image/tag availability: `node:24-bookworm` and `cnbcool/attachments`.
+#     `scripts/check-image.sh` builds from the repository Dockerfile, so no
+#     separate docker CLI image is used here.
+#   * `cnbcool/attachments` `settings.attachments` contract (taken from the
+#     reference repository, not from CNB documentation).
+#   * Whether `${CNB_TOKEN}` can write outside this repository's own namespace,
+#     and whether the resulting CNB package is publicly pullable.
+#   * Whether `node:24-bookworm` can install Chromium and its apt dependencies as
+#     root. `scripts/ci-verify.sh` fails loudly instead of silently skipping.
+#   * Docker-in-Docker availability for nested `docker build` (the image smoke
+#     check) inside a CNB job, and whether the CNB agent's docker CLI provides
+#     `buildx` (used for the multi-arch push and `imagetools` latest promotion).
+#     CNB's documented examples use `docker buildx build --push` from `script`,
+#     so the Docker daemon is present; `buildx` subcommands are not separately
+#     documented as guaranteed.
+#
+# ---------------------------------------------------------------------------
+# FIRST-RUN PREREQUISITE (owner action)
+# ---------------------------------------------------------------------------
+# `git:release` uses the platform token and needs repository write permission.
+# Verify that this repository's CNB pipeline token can write Releases; do not add
+# a personal access token here. Nothing else needs a new secret: registry auth
+# reuses the platform-issued `${CNB_TOKEN}` / `${CNB_TOKEN_USER_NAME}`.
+
+# The release pipeline publishes to the receiving repository's own path:
+#   ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+# which resolves to `docker.cnb.cool/azurekiln/azurekiln-backup-system`.
+# It is written literally (not as a CI variable) because `docker.image` must be a
+# non-empty literal and because an absolute registry path makes CNB authenticate
+# with the platform token instead of expecting per-branch credentials. For a Tag
+# build there is no branch, so a variable-driven value cannot be relied on here.
+# To target a different registry/namespace, change THIS single line.
+
+# ---------------------------------------------------------------------------
+# Verification (shared verbatim by every non-publishing event)
+# ---------------------------------------------------------------------------
+.verify-pipeline: &verify-pipeline
+  name: verify
+  docker:
+    image: node:24-bookworm
+  stages:
+    - name: verify
+      jobs:
+        # `verify` resolves absolute backup-tool paths, proves each binary
+        # executes, runs check -> test -> build -> browser -> layout
+        # sequentially, and fails when a real-tool case was skipped. Reused so
+        # the CNB and GitHub lanes cannot drift.
+        - name: ci-verify
+          env:
+            # Disposable CI container: a missing tool may be installed here.
+            CI_VERIFY_ALLOW_DEV: "1"
+            CI_VERIFY_ARTIFACT_DIR: .artifacts/ci
+          script: bash scripts/ci-verify.sh verify
+
+# ---------------------------------------------------------------------------
+# main: verification only
+# ---------------------------------------------------------------------------
+main:
+  push:
+    - <<: *verify-pipeline
+  # API-triggered and PR runs are verification-only; the `v*` tag pipeline is
+  # the single publication entry point.
+  api_trigger:
+    - <<: *verify-pipeline
+  pull_request:
+    - <<: *verify-pipeline
+
+# ---------------------------------------------------------------------------
+# Tag release: ONE ordered pipeline.
+#
+# Every stage above `publish` is a hard prerequisite: CNB aborts the pipeline on
+# the first failing stage, so no registry login, image push, Release write or
+# asset upload can happen unless verification of THIS exact commit passed.
+# ---------------------------------------------------------------------------
+"v*":
+  tag_push:
+    - name: release
+      # Absolute image path: see the note at the top of this file. Override by
+      # editing this ONE line.
+      docker:
+        image: docker.cnb.cool/azurekiln/azurekiln-backup-system
+      # Serializes release pipelines: an older tag re-run cannot move `latest`
+      # while a newer release is mid-flight, and two runs cannot interleave image
+      # tags with Release writes. Verified: pipeline `lock` with `wait`.
+      lock:
+        key: release-promotion
+        wait: true
+        timeout: 3600
+      env:
+        # Variables for the release *stage* scripts. (Values declared in `env`
+        # are substituted into `script` bodies; the script keeps a fallback so a
+        # missing value cannot silently produce an empty --platform list.)
+        RELEASE_IMAGE_PLATFORMS: linux/amd64,linux/arm64
+      stages:
+        # ---- 1. Tag must be exactly `v<package.json version>` --------------
+        # Runs before anything else, including the verification install, so a
+        # mistyped tag fails in seconds without touching a registry.
+        - name: validate-release-tag
+          script: |
+            set -eu
+            test "${CNB_IS_TAG}" = "true"
+            node scripts/prepare-release.mjs --check-tag "${CNB_BRANCH}"
+
+        # ---- 2. Application verification (same entrypoint as main/PR) -----
+        - name: verify
+          jobs:
+            - name: ci-verify
+              env:
+                CI_VERIFY_ALLOW_DEV: "1"
+                CI_VERIFY_ARTIFACT_DIR: .artifacts/ci
+              # `verify-and-package` runs the full verification AND
+              # `scripts/prepare-release.mjs`, which writes
+              #   dist/<archive>.tar.gz, dist/<archive>.tar.gz.sha256, dist/release.json
+              # The checksum is verified against the real bytes by the script.
+              script: bash scripts/ci-verify.sh verify-and-package
+
+        # ---- 3. Everything below writes to external systems --------------
+        # One stage with SEQUENTIAL jobs (a `jobs` array runs in order): the
+        # image, the Release and the Release assets must all be published for a
+        # release to be complete, so a registry failure aborts before the
+        # Release is written and a failed Release write is not hidden.
+        # Every job below is reachable only after stages 1-2 succeeded.
+        - name: publish
+          jobs:
+            # 3a. Multi-arch build and push. Verified: buildx multi-arch needs no
+            # extra service/QEMU configuration on CNB.
+            - name: publish-image
+              script: |
+                set -eu
+                IMAGE="docker.cnb.cool/azurekiln/azurekiln-backup-system"
+                PLATFORMS="${RELEASE_IMAGE_PLATFORMS:-linux/amd64,linux/arm64}"
+                # Strict `v<package-version>` check again, inside the publishing
+                # job, so this job is never safe to run standalone by accident.
+                meta="$(node scripts/prepare-release.mjs --check-tag "${CNB_BRANCH}")"
+                echo "$meta"
+                version="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).version)' "$meta")"
+                is_prerelease="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).isPrerelease))' "$meta")"
+
+                # Disposable single-platform candidate: proves the image starts
+                # and carries its runtime tools BEFORE the published 2-arch image
+                # is built. A multi-platform image cannot be loaded into the local
+                # image store, so candidate and publication are separate steps.
+                # The script never mounts .env, compose.yaml, sources or the
+                # production `backup-data` volume.
+                bash scripts/check-image.sh --build \
+                  --platform linux/amd64 2>&1 | tee /tmp/check-image.log
+
+                docker login -u "${CNB_TOKEN_USER_NAME}" -p "${CNB_TOKEN}" "${CNB_DOCKER_REGISTRY}"
+
+                tags="--tag ${IMAGE}:${version} --tag ${IMAGE}:${CNB_COMMIT}"
+                # `latest` is never written here. It is only promoted by the
+                # compare-and-swap step below, so a failed or older-tag re-run
+                # cannot move the stable channel.
+                echo "publishing ${IMAGE}:${version} for ${PLATFORMS}"
+                docker buildx build \
+                  --platform "${PLATFORMS}" \
+                  --label "org.opencontainers.image.source=${CNB_REPO_URL_HTTPS}" \
+                  --label "org.opencontainers.image.revision=${CNB_COMMIT}" \
+                  --label "org.opencontainers.image.version=${version}" \
+                  $tags \
+                  --push \
+                  .
+
+                # 3b. Stable promotion, guard-checked immediately before the write.
+                # Reuses the same channel rules as the GitHub lane
+                # (`resolveChannel`), reading the live `latest` version from the
+                # registry. A missing `latest` is a normal first-publication state.
+                latest_raw=""
+                if latest_raw="$(docker buildx imagetools inspect --raw "${IMAGE}:latest" 2>/dev/null)"; then
+                  echo "current latest manifest found"
+                else
+                  latest_raw=""
+                  echo "no current latest tag (first stable publication, or not yet promoted)"
+                fi
+                current="$(LATEST_RAW="$latest_raw" node --input-type=module -e "
+                  import { parseVersion } from './scripts/prepare-release.mjs';
+                  const raw = process.env.LATEST_RAW ?? '';
+                  if (!raw.trim()) process.exit(0);
+                  const found = raw.match(/[0-9]+\.[0-9]+\.[0-9]+/g) ?? [];
+                  process.stdout.write(found.find((v) => {
+                    const p = parseVersion(v);
+                    return p && !p.isPrerelease;
+                  }) ?? '');
+                ")"
+                advance="$(VERSION="$version" TAG="${CNB_BRANCH}" CURRENT="$current" node --input-type=module -e "
+                  import { parseReleaseTag, resolveChannel } from './scripts/prepare-release.mjs';
+                  const release = parseReleaseTag(process.env.TAG, process.env.VERSION);
+                  const channel = resolveChannel({
+                    release,
+                    currentLatest: process.env.CURRENT || null,
+                  });
+                  console.error('latest: ' + channel.latest + ' (' + channel.reason + ')');
+                  process.stdout.write(String(channel.latest));
+                ")"
+                if [ "$advance" = "true" ]; then
+                  # Appends a tag to the already-pushed manifest list; the
+                  # promoted digest is exactly the verified one.
+                  docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${version}"
+                  docker buildx imagetools inspect "${IMAGE}:latest" || true
+                else
+                  echo "stable latest unchanged for ${version}"
+                fi
+                if [ "$is_prerelease" = "true" ]; then
+                  echo "prerelease ${version}: latest is never advanced"
+                fi
+
+            # 3c. Release + deployment bundle.
+            # `git:release` cannot attach files (verified: release.md states
+            # "该内置任务不支持上传附件"), so options are written to a file, the
+            # Release record is created by the `publish-release-record` job and
+            # the archive/checksum/metadata are uploaded by the job after it.
+            - name: prepare-release-options
+              script: |
+                set -eu
+                meta="$(node scripts/prepare-release.mjs --check-tag "${CNB_BRANCH}")"
+                version="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).version)' "$meta")"
+                is_prerelease="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).isPrerelease))' "$meta")"
+                archive="$(node -e 'const m=JSON.parse(process.argv[1]); process.stdout.write(String(m.archive ?? ""))' "$meta")"
+                echo "version=$version prerelease=$is_prerelease archive=$archive"
+                # Exported for the later attachment job in this same pipeline
+                # (job `exports`: `echo "##[set-output key=value]"`). Verified in
+                # build/env.md; 100KB value limit, single line.
+                echo "##[set-output release_version=${version}]"
+
+                mkdir -p dist
+                # `overlying: true` updates an existing Release in place instead
+                # of the default (documented) delete-then-recreate, so a re-run
+                # of the same tag has a predictable result.
+                # `latest` stays false: the Release's "latest" flag is not the
+                # stable channel; the image `latest` tag is handled by
+                # `publish-image`.
+                cat > dist/cnb-release-options.json <<JSON
+                {
+                  "overlying": true,
+                  "title": "azurekiln-backup-system v${version}",
+                  "descriptionFromFile": "dist/release-notes.md",
+                  "preRelease": ${is_prerelease},
+                  "latest": false
+                }
+                JSON
+                {
+                  echo "# azurekiln-backup-system v${version}"
+                  echo
+                  echo 'The attached deployment bundle installs this version without building:'
+                  echo
+                  echo '```sh'
+                  echo "tar -xzf ${archive}"
+                  echo "sha256sum -c ${archive}.sha256"
+                  echo 'cd azurekiln-backup-system'
+                  echo 'cp .env.docker.example .env   # then edit'
+                  echo 'docker compose pull'
+                  echo 'docker compose up -d --no-build'
+                  echo '```'
+                  echo
+                  echo "Image: \`docker.cnb.cool/azurekiln/azurekiln-backup-system:${version}\`"
+                  echo
+                  echo "Source revision: \`${CNB_COMMIT}\`"
+                  echo
+                  echo 'Existing `.env`, the `backup-data` volume and operator mount choices are preserved; never run `docker compose down -v`.'
+                } > dist/release-notes.md
+                echo '--- release options ---'
+                cat dist/cnb-release-options.json
+              exports:
+                release_version: RELEASE_VERSION
+
+            - name: publish-release-record
+              type: git:release
+              optionsFrom: dist/cnb-release-options.json
+
+            # Attachment contract taken from the reference repository, not from
+            # CNB docs (see UNVERIFIED above). LITERAL paths, not globs: the archive
+            # name comes from scripts/prepare-release.mjs as
+            # `azurekiln-backup-system-<version>-deploy.tar.gz`, and the version is
+            # known here from `--check-tag`, so a stale or missing file must fail
+            # loudly instead of an empty glob uploading nothing.
+            - name: upload-release-assets
+              image: cnbcool/attachments:latest
+              settings:
+                attachments:
+                  - dist/azurekiln-backup-system-${RELEASE_VERSION}-deploy.tar.gz
+                  - dist/azurekiln-backup-system-${RELEASE_VERSION}-deploy.tar.gz.sha256
+                  - dist/release.json
+
+# ---------------------------------------------------------------------------
+# Any tag that is not a `v...` version is not a release candidate.
+# `$` is the CNB fallback selector (verified: only unmatched names land here).
+# ---------------------------------------------------------------------------
+"$":
+  tag_push:
+    - name: reject-unexpected-tag
+      docker:
+        image: node:24-bookworm
+      stages:
+        - name: reject
+          script: |
+            echo "Only v<package.json version> tags publish. Received tag: ${CNB_BRANCH}" >&2
+            exit 1

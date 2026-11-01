@@ -1,6 +1,6 @@
 services:
   backup:
-    build: .
+    image: "${BACKUP_IMAGE:-ghcr.io/azurekiln2333/azurekiln-backup-system:latest}"
     user: "0:0"
     restart: unless-stopped
     env_file:
@@ -23,7 +23,29 @@ services:
       # - /data/bt_backup:/sources/bt_backup:ro
       # The container runs as root and can read a root-owned rclone config.
       - ${RCLONE_CONFIG_DIR}:/config:ro
+    labels:
+      # Only labelled containers in this deployment's scope are updated.
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-azurekiln-backup-system}"
     stop_grace_period: 30s
+
+  # Automatic updates. This is the only service with access to the Docker socket.
+  watchtower:
+    image: nickfedor/watchtower:1.23.2
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_SCOPE: "${COMPOSE_PROJECT_NAME:-azurekiln-backup-system}"
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-600}"
+      # Old images are removed after a successful update; roll back by re-pulling
+      # the previous version tag or digest (see the READMEs).
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_TIMEOUT: 30s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-azurekiln-backup-system}"
 
 volumes:
   backup-data:

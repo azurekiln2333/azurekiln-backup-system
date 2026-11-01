@@ -1,0 +1,16 @@
+# Local-build override. Use it explicitly, after the base file:
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+# Automatic updates stay off for locally built images, and the updater only
+# starts when you ask for the auto-update profile.
+services:
+  backup:
+    image: azurekiln-backup-system:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+
+  watchtower:
+    profiles: [auto-update]

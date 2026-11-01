@@ -40,13 +40,53 @@ The default production address is `http://127.0.0.1:16323`.
 
 ## Docker deployment
 
+`compose.yaml` runs a prebuilt image, `ghcr.io/azurekiln2333/azurekiln-backup-system:latest` by default, and `BACKUP_IMAGE` can point at a CNB image, a version tag, or a digest. The server needs neither Node.js nor a local build.
+
 Create `.env` from `.env.docker.example`. Configure a private `SETUP_TOKEN` or initial administrator credentials, set `BACKUP_PUBLIC_URL` to the deployment origin, and adjust the read-only source mounts and rclone configuration mount in `compose.yaml`.
 
 ```sh
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 ```
 
-The supplied Compose file binds the application to `127.0.0.1:16323` on the host; terminate HTTPS at a reverse proxy. The container runs as root so it can read restricted source and rclone files. No Docker socket is required. `/data` is persistent application state and must not overlap the mounted source roots under `/sources`.
+The supplied Compose file binds the application to `127.0.0.1:16323` on the host; terminate HTTPS at a reverse proxy. The container runs as root so it can read restricted source and rclone files. The backup container itself never receives a Docker socket; only the automatic-update service (`watchtower`) mounts it.
+
+`COMPOSE_PROJECT_NAME` sets the Compose project name and doubles as the automatic-update scope: give each deployment a distinct value so one updater never replaces another deployment's container. Leaving it empty makes Compose derive the project name from the directory name.
+
+### Image source and first publication
+
+The release pipeline builds and pushes the image as `ghcr.io/azurekiln2333/azurekiln-backup-system` from `v<version>` tags, publishing a version tag (for example `:0.1.0`) and a source-commit tag. `latest` only follows the newest stable release; prereleases never move it.
+
+Before the first publication `docker compose pull` fails because no image exists yet. Afterwards the public image is pullable anonymously by default; if package visibility is set to private, log in to the registry first:
+
+```sh
+docker login ghcr.io
+```
+
+The updater does not inherit the host's Docker CLI credentials, so a private image needs explicit credentials as documented by the updater project; the default public image needs none.
+
+### Automatic updates
+
+`compose.yaml` includes a `watchtower` service (`nickfedor/watchtower:1.23.2`). It checks for a new image every 600 seconds by default, and it only updates containers in this deployment labelled `com.centurylinklabs.watchtower.enable=true` — that is, this application's `backup` container. The updater labels itself disabled. Change the interval with `WATCHTOWER_POLL_INTERVAL`.
+
+- **Disable updates**: set `com.centurylinklabs.watchtower.enable` to `"false"` on `backup` in `compose.yaml`, or pause the updater with `docker compose stop watchtower`. `docker compose up -d` starts a stopped updater again, so disable it persistently by changing the label or removing the service.
+- **Monitor only**: add `WATCHTOWER_MONITOR_ONLY: "true"` to the updater; it reports new images without replacing the container.
+- **Pin a version**: set `BACKUP_IMAGE` in `.env` to an explicit version (`...:0.1.0`) or digest (`...@sha256:...`), then run `docker compose up -d --no-build`.
+- **Watch the log**: `docker compose logs -f watchtower`.
+
+An automatic update recreates the container with its existing mounts; it does **not** apply changes to `compose.yaml`, so new mounts, environment variables, and ports still need a manual `up -d`. Updates are **not zero-downtime**: the old container receives SIGTERM, a running backup is aborted and marked failed, queued runs become interrupted, and nothing is retried automatically. Pause the updater or pin a version before long backups.
+
+Old images are removed after a successful update (`WATCHTOWER_CLEANUP=true`). **Rollback** therefore requires pulling the previous version tag or digest again: set `BACKUP_IMAGE` in `.env` to that tag or digest, stop the updater or disable the update label, then run `docker compose pull` and `docker compose up -d --no-build`. Rollback only switches the image; data stays in the existing `backup-data` volume. Never run `docker compose down -v` and never rename that volume. An older image is not guaranteed to be compatible with data written by a newer one.
+
+### Local builds
+
+A source checkout can explicitly select the local-build override:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+That override uses `azurekiln-backup-system:local`, `pull_policy: build`, and `build: .`, and sets the `backup` update label to `false`. It also moves `watchtower` behind the `auto-update` profile so ordinary commands never start it; enable it deliberately with `--profile auto-update`. When switching an existing deployment from automatic updates to a local build, also run `docker compose stop watchtower`, otherwise the running updater keeps replacing the container.
 
 Mount the directory containing an existing rclone configuration through `RCLONE_CONFIG_DIR` at `/config`, then import `/config/rclone.conf` from the Storage page. The original mount remains read-only. The application keeps a private writable copy under `/data/rclone/` so refreshed OAuth tokens can be stored without modifying the original file.
 

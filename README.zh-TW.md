@@ -40,13 +40,53 @@ npm start
 
 ## Docker 部署
 
-以 `.env.docker.example` 建立 `.env`，設定私密的 `SETUP_TOKEN` 或初始管理員憑證，將 `BACKUP_PUBLIC_URL` 設為部署來源網址，並依實際環境調整 `compose.yaml` 的唯讀來源掛載及 rclone 設定掛載。
+`compose.yaml` 使用預先建置的映像，預設為 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改為 CNB 映像、版本標籤或 digest。伺服器不需要 Node.js，也不需要本機建置。
+
+以 `.env.docker.example` 建立 `.env`，設定私密的 `SETUP_TOKEN` 或初始管理員憑證，將 `BACKUP_PUBLIC_URL` 設為部署來源網址，並依實際環境調整 `compose.yaml` 的唯讀來源掛載及 rclone 設定掛載。`/sources` 是容器內的備份來源目錄入口，主機路徑可依需要映射到它的子目錄；`/data` 是持久化的應用程式狀態，兩者不得重疊。
 
 ```sh
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 ```
 
-範例 Compose 僅將服務發佈至主機的 `127.0.0.1:16323`；HTTPS 應由反向代理終止。容器以 root 執行，以讀取受限的來源及 rclone 設定檔。不需要 Docker socket。`/data` 是持久化的應用程式狀態，不得與 `/sources` 下掛載的來源路徑重疊。
+範例 Compose 僅將服務發佈至主機的 `127.0.0.1:16323`；HTTPS 應由反向代理終止。容器以 root 執行，以讀取受限的來源及 rclone 設定檔。備份容器本身不接觸 Docker socket；只有負責自動更新的 `watchtower` 服務掛載它。
+
+`COMPOSE_PROJECT_NAME` 決定 Compose 專案名稱，同時作為自動更新的作用域：不同部署應使用不同數值，避免 updater 互相取代容器。留空時 Compose 以專案目錄名稱作為專案名稱。
+
+### 映像來源與首次發佈
+
+映像由倉庫的發佈流程在 `v<版本>` 標籤上建置並推送到 `ghcr.io/azurekiln2333/azurekiln-backup-system`，同時提供版本標籤（例如 `:0.1.0`）與來源提交標籤。`latest` 只跟隨最新穩定版本，預發行版本不會推進它。
+
+首次發佈之前 `docker compose pull` 會失敗（映像還不存在）。首次發佈之後，公開映像預設可以匿名拉取；若套件可見性設為私有，需先登入該 registry：
+
+```sh
+docker login ghcr.io
+```
+
+自動更新容器不會自動繼承主機的 Docker 登入憑證，私有映像需依 updater 文件明確提供憑證；預設的公開映像不需要任何憑證。
+
+### 自動更新
+
+`compose.yaml` 內建 `watchtower` 服務（映像 `nickfedor/watchtower:1.23.2`），預設每 600 秒檢查一次映像更新，只更新本部署中帶 `com.centurylinklabs.watchtower.enable=true` 標籤的容器，也就是本應用程式的 `backup` 容器；updater 本身標記為停用。輪詢間隔可透過 `WATCHTOWER_POLL_INTERVAL` 調整。
+
+- **停止自動更新**：將 `compose.yaml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改為 `"false"`，或執行 `docker compose stop watchtower` 暫停 updater。`docker compose up -d` 會重新啟動已停止的 updater，因此長期關閉應改標籤或移除該服務。
+- **僅監視不更新**：為 updater 加上 `WATCHTOWER_MONITOR_ONLY: "true"`，它只報告有新映像，不取代容器。
+- **固定版本**：將 `.env` 中的 `BACKUP_IMAGE` 改為明確版本（例如 `...:0.1.0`）或 digest（`...@sha256:...`），再執行 `docker compose up -d --no-build`。
+- **查看日誌**：`docker compose logs -f watchtower`。
+
+自動更新會沿用原有掛載重建容器，**不會**套用 `compose.yaml` 的變更（新增掛載、環境變數、連接埠仍需手動 `up -d`）。更新**沒有零停機保證**：重建時舊容器收到 SIGTERM，執行中的備份會被中止並標記為失敗，排隊中的執行會變為「已中斷」，且不會自動重試。長時間備份之前，建議先暫停 updater 或固定版本。
+
+更新成功後舊映像會被刪除（`WATCHTOWER_CLEANUP=true`）。**回滾**需要重新拉取先前的版本或 digest：先在 `.env` 中將 `BACKUP_IMAGE` 改為要回到的版本標籤或 digest，停止 updater 或關閉更新標籤，然後執行 `docker compose pull` 與 `docker compose up -d --no-build`。回滾只切換映像，資料仍保留在原有 `backup-data` 卷中；不要執行 `docker compose down -v`，也不要重新命名該卷。回滾到舊版本不保證相容於之後版本寫入的資料。
+
+### 本機建置
+
+從原始碼檢出的部署可以明確選擇本機建置覆蓋檔：
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+該覆蓋檔使用 `azurekiln-backup-system:local`、`pull_policy: build` 與 `build: .`，並將 `backup` 的更新標籤設為 `false`；`watchtower` 同時被放到 `auto-update` profile 下，一般指令不會啟動它，需要時以 `--profile auto-update` 明確啟用。從自動更新切換到本機建置時，請額外執行 `docker compose stop watchtower`，否則已執行的 updater 會繼續取代容器。
 
 使用 `RCLONE_CONFIG_DIR` 將既有 rclone 設定目錄唯讀掛載至 `/config`，再於「遠端儲存」頁面匯入 `/config/rclone.conf`。原始掛載保持唯讀；應用程式會在 `/data/rclone/` 儲存可寫入的私有副本，以保存更新後的 OAuth token，而不修改原始檔案。
 

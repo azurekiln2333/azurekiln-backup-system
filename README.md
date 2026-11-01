@@ -38,13 +38,53 @@ npm start
 
 ## Docker 部署
 
+`compose.yaml` 使用预构建镜像，默认 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改为 CNB 镜像、版本标签或 digest。服务器不需要 Node.js，也不需要本地构建。
+
 使用 `.env.docker.example` 对应的变量配置 `.env`，填写私密的 `SETUP_TOKEN` 或初始管理员账号密码。按实际域名设置 `BACKUP_PUBLIC_URL`，修改 `compose.yaml` 中 `/sources` 下的目录挂载及现有 rclone 配置挂载。`/sources` 是容器内的备份源目录入口，宿主机路径可按需映射到它的子目录；`/data` 保存本应用的状态，两者不能重叠。登录后“文件管理”页面会列出 `SOURCE_ROOTS` 允许范围内的容器目录与文件。该页面只读，可从目录直接新建备份任务。
 
 ```shell
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 ```
 
-示例 Compose 只把端口发布到宿主机 `127.0.0.1:16323`，由 Nginx/宝塔反向代理提供 HTTPS。容器以 root 运行，源目录保持只读挂载。无需 Docker socket。
+示例 Compose 只把端口发布到宿主机 `127.0.0.1:16323`，由 Nginx/宝塔反向代理提供 HTTPS。容器以 root 运行，源目录保持只读挂载。备份容器本身不接触 Docker socket；只有负责自动更新的 `watchtower` 服务挂载它。
+
+`COMPOSE_PROJECT_NAME` 决定 Compose 项目名，同时作为自动更新的作用域：不同部署应使用不同的值，避免 updater 互相替换容器。留空时 Compose 以项目目录名作为项目名。
+
+### 镜像来源与首次发布
+
+镜像由仓库的发布流程在 `v<版本>` 标签上构建并推送到 `ghcr.io/azurekiln2333/azurekiln-backup-system`，同时提供版本标签（如 `:0.1.0`）与来源提交标签。`latest` 只跟随最新稳定版本，预发布版本不会推进它。
+
+首次发布之前 `docker compose pull` 会失败（镜像还不存在）。首次发布之后，公开镜像默认可以匿名拉取；如果包的可见性被设为私有，需要先登录该 registry：
+
+```shell
+docker login ghcr.io
+```
+
+自动更新容器不会自动继承宿主机的 Docker 登录凭据，私有镜像需要按 updater 文档显式提供凭据；默认的公开镜像不需要任何凭据。
+
+### 自动更新
+
+`compose.yaml` 内置 `watchtower` 服务（镜像 `nickfedor/watchtower:1.23.2`），默认每 600 秒检查一次镜像更新，只更新本部署中带 `com.centurylinklabs.watchtower.enable=true` 标签的容器，也就是本应用的 `backup` 容器；updater 自身标记为禁用。轮询间隔通过 `WATCHTOWER_POLL_INTERVAL` 调整。
+
+- **停止自动更新**：把 `compose.yaml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改为 `"false"`，或执行 `docker compose stop watchtower` 暂停 updater。`docker compose up -d` 会重新启动已停止的 updater，因此长期关闭应改标签或删除该服务。
+- **只监视不更新**：给 updater 增加 `WATCHTOWER_MONITOR_ONLY: "true"`，它只报告有新镜像，不替换容器。
+- **固定版本**：把 `.env` 中的 `BACKUP_IMAGE` 改为明确版本（如 `...:0.1.0`）或 digest（`...@sha256:...`），再执行 `docker compose up -d --no-build`。
+- **查看日志**：`docker compose logs -f watchtower`。
+
+自动更新会沿用原有挂载重建容器，**不会**应用 `compose.yaml` 的改动（新增挂载、环境变量、端口仍需手工 `up -d`）。更新**没有零停机保证**：重建时旧容器收到 SIGTERM，正在执行的备份会被中止并标记为失败，排队中的执行会变为“已中断”，且不会自动重试。长时间备份之前，建议先暂停 updater 或固定版本。
+
+更新成功后旧镜像会被删除（`WATCHTOWER_CLEANUP=true`）。**回滚**需要重新拉取之前的版本或 digest：先在 `.env` 中把 `BACKUP_IMAGE` 改为要回到的版本标签或 digest，停止 updater 或关闭更新标签，然后执行 `docker compose pull` 与 `docker compose up -d --no-build`。回滚只切换镜像，数据仍保留在原有 `backup-data` 卷中；不要执行 `docker compose down -v`，也不要重命名该卷。回滚到旧版本不保证兼容之后版本写入的数据。
+
+### 本地构建
+
+从源码检出的部署可以显式选择本地构建覆盖文件：
+
+```shell
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+该覆盖文件使用 `azurekiln-backup-system:local`、`pull_policy: build` 与 `build: .`，并把 `backup` 的更新标签设为 `false`；`watchtower` 同时被放到 `auto-update` profile 下，普通命令不会启动它，需要时用 `--profile auto-update` 显式启用。从自动更新切换到本地构建时，请额外执行 `docker compose stop watchtower`，否则已运行的 updater 会继续替换容器。
 
 现有 rclone 配置目录通过 `RCLONE_CONFIG_DIR` 只读挂载到 `/config`，然后在“存储”页面从 `/config/rclone.conf` 导入。实际运行配置会保存到持久卷中的私有目录，可写入刷新后的 OAuth token。重新导入是明确操作，不会定期覆盖已经刷新的 token。
 

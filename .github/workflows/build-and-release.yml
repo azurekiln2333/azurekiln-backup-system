@@ -1,0 +1,425 @@
+# GitHub verification, tag-only publication, and GHCR image delivery.
+#
+# Contract (see .trellis/tasks/10-24-ghcr-image-pipeline):
+#   * Branches/PRs/manual runs only verify. Nothing is published from them.
+#   * Only a `v<package-version>` tag publishes, and only after the verification
+#     job of that exact commit succeeded in the same run (`needs:`).
+#   * `contents: read` is the default; `packages: write` lives only on the image
+#     job and `contents: write` only on the release job.
+#   * `latest` is promoted only for a stable version that is newer than the
+#     current `latest`, evaluated immediately before the promotion from the
+#     already-pushed per-version image. A rerun of an older tag therefore keeps
+#     its own version tag but leaves `latest` alone.
+#
+# Shared tag/version/channel logic lives in scripts/prepare-release.mjs so that
+# the CNB lane applies identical rules.
+name: Build and release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Required by the promotion job to read run/job concurrency state. Read-only.
+permissions:
+  contents: read
+  actions: read
+
+# One publishing run per tag at a time. Reruns of the same tag queue behind the
+# active run so stable `latest` promotion can detect a waiting run first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+  TARGET_PLATFORMS: linux/amd64,linux/arm64
+  REGISTRY: ghcr.io
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0 # 949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build frontend
+        run: npm run build
+
+      # The backup suites resolve absolute executables and only exercise the real
+      # archive round trips when they exist. Install them so real-tool coverage
+      # actually runs instead of silently skipping.
+      - name: Install backup tools
+        id: tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rclone 7zip tar sqlite3
+          seven_zip="$(command -v 7zz || command -v 7z)"
+          test -x "$seven_zip"
+          echo "seven_zip=$seven_zip" >> "$GITHUB_OUTPUT"
+          "$seven_zip" | head -n 1
+          rclone version | head -n 1
+          sqlite3 --version
+          tar --version | head -n 1
+
+      - name: Run tests
+        env:
+          SEVEN_ZIP_BINARY: ${{ steps.tools.outputs.seven_zip }}
+        run: npm test
+
+      # Browser and layout checks are sequential on purpose: they contend for the
+      # same backup tools and ports.
+      - name: Install Chromium matching playwright-core
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Resolve Chromium executable
+        id: browser
+        run: |
+          set -euo pipefail
+          echo "path=$(node --input-type=module -e "import { chromium } from 'playwright-core'; process.stdout.write(chromium.executablePath());")" >> "$GITHUB_OUTPUT"
+
+      - name: Browser regression checks
+        env:
+          BROWSER_EXECUTABLE: ${{ steps.browser.outputs.path }}
+        run: npm run check:browser
+
+      - name: Layout regression checks
+        env:
+          BROWSER_EXECUTABLE: ${{ steps.browser.outputs.path }}
+        run: npm run check:layout
+
+      # Fail closed: a tag whose tag/version metadata disagrees must never reach
+      # the publishing jobs, so validate it inside the verification job too.
+      - name: Validate release tag metadata
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/prepare-release.mjs --check-tag "$RELEASE_TAG"
+
+      - name: Upload browser failure details
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2 # cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: browser-failure-${{ github.run_id }}
+          path: |
+            test-results/browser/
+            test-results/layout/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  image:
+    name: Publish image
+    needs: [verify]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      version: ${{ steps.meta.outputs.version }}
+      revision: ${{ steps.meta.outputs.revision }}
+      version_tag: ${{ steps.meta.outputs.version_tag }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0 # 949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Strict `v<package-version>` match. Throws (exit 2) on any mismatch, so a
+      # wrong tag fails before login, build or push.
+      - name: Resolve release metadata
+        id: meta
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          meta="$(node scripts/prepare-release.mjs --check-tag "$RELEASE_TAG")"
+          echo "$meta"
+          read -r version version_tag is_prerelease <<EOF
+          $(node -e "
+            const m = JSON.parse(process.argv[1]);
+            console.log(m.version, m.imageTags[0], m.isPrerelease);
+          " "$meta")
+          EOF
+          {
+            echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}"
+            echo "version=$version"
+            echo "version_tag=$version_tag"
+            echo "is_prerelease=$is_prerelease"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.4.0 # 99012661954931238ded8c8b007157a8430204e1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1 # f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.7.0 # 81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Single-platform candidate for the disposable runtime smoke test. A
+      # multi-platform image cannot be loaded into the local image store, so the
+      # smoke test and the published multi-arch build are separate steps.
+      - name: Build amd64 candidate
+        uses: docker/build-push-action@v7.4.0 # c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: azurekiln-backup-system:verify
+
+      # Startup and tool presence only. No production mounts, no state.
+      - name: Smoke test the candidate image
+        run: |
+          set -euo pipefail
+          docker run --rm azurekiln-backup-system:verify node --version
+          docker run --rm --entrypoint sh azurekiln-backup-system:verify -c \
+            'rclone version >/dev/null && (7zz >/dev/null 2>&1 || 7z >/dev/null 2>&1) && tar --version >/dev/null && sqlite3 --version >/dev/null'
+
+      # Version + source-revision tags only. `latest` is never written here, so a
+      # failed or older-tag rerun cannot move the stable channel.
+      - name: Build and push multi-architecture image
+        uses: docker/build-push-action@v7.4.0 # c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          platforms: ${{ env.TARGET_PLATFORMS }}
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version_tag }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.revision }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          provenance: mode=max
+          sbom: true
+
+  release:
+    name: Publish release
+    needs: [verify, image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0 # 949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Package deployment bundle
+        id: bundle
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.pushed_at }}
+        run: |
+          set -euo pipefail
+          # SOURCE_DATE_EPOCH keeps the archive reproducible for an unchanged tag.
+          out="$(node scripts/prepare-release.mjs --bundle --tag "$RELEASE_TAG" --out-dir dist --source-date-epoch "$SOURCE_DATE_EPOCH")"
+          echo "$out"
+          archive="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).archive)' "$out")"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          # Verify the sidecar against the actual bytes before publishing anything.
+          (cd dist && sha256sum --check "$archive.sha256")
+
+      - name: Upload deployment bundle as a workflow artifact
+        uses: actions/upload-artifact@v7.0.2 # cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ steps.bundle.outputs.archive }}
+          path: |
+            dist/${{ steps.bundle.outputs.archive }}
+            dist/${{ steps.bundle.outputs.archive }}.sha256
+            dist/release.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # An existing release is updated in place; no second release is created and
+      # the assets are replaced. Covers reruns of the same tag.
+      - name: Publish or update the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          archive="${{ steps.bundle.outputs.archive }}"
+          sha256sum --check "$archive.sha256"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$archive" "$archive.sha256" release.json --clobber
+          else
+            flags=()
+            if [ "${{ needs.image.outputs.is_prerelease }}" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" "$archive" "$archive.sha256" release.json \
+              --verify-tag \
+              --title "azurekiln-backup-system v${{ needs.image.outputs.version }}" \
+              --generate-notes \
+              "${flags[@]}"
+          fi
+
+  # Stable-only. Runs after both the image and the release exist, so a failure
+  # anywhere earlier leaves `latest` untouched. The channel decision is taken
+  # from live registry/run state immediately before the single write.
+  promote-latest:
+    name: Promote latest
+    needs: [image, release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.image.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0 # 949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1 # f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.7.0 # 81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve current channel and queue state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # `latest` is read from the registry itself (anonymous-capable) rather
+          # than from package metadata that may be deleted or made private. A
+          # genuinely missing tag is the first-publication state; an unreadable
+          # or garbled response must fail closed instead of looking empty.
+          status=0
+          docker buildx imagetools inspect --raw "${IMAGE}:latest" > /tmp/latest.json 2>/tmp/latest.err || status=$?
+          if [ "$status" -ne 0 ] && ! grep -qi 'not found\|manifest unknown\|no such' /tmp/latest.err; then
+            echo "::error::cannot read ${IMAGE}:latest (exit $status): $(cat /tmp/latest.err)"
+            exit 1
+          fi
+          current="$(node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            import { parseVersion } from './scripts/prepare-release.mjs';
+            let raw = '';
+            try { raw = readFileSync('/tmp/latest.json', 'utf8'); } catch {}
+            if (!raw.trim()) { process.stdout.write(''); process.exit(0); }
+            // OCI index/manifest JSON carries the version in annotations and
+            // labels; collect every stable semver it mentions.
+            const found = raw.match(/\d+\.\d+\.\d+/g) ?? [];
+            const stable = found.filter((value) => {
+              const parsed = parseVersion(value);
+              return parsed && !parsed.isPrerelease;
+            });
+            process.stdout.write(stable.at(0) ?? '');
+          ")"
+          # A tag exists but no version could be extracted: treat as unreadable.
+          if [ -s /tmp/latest.json ] && [ -z "$current" ]; then
+            echo "::error::${IMAGE}:latest exists but its version is not identifiable"
+            exit 1
+          fi
+          # Another verification run for the same commit may still be in flight.
+          # `concurrency` already serializes tags, so this is a second guard for a
+          # branch run and a rerun of the same tag racing the active run.
+          curl --silent --show-error --fail \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -o /tmp/runs.json \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&per_page=20" || true
+          waiting="$(node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            let data = {};
+            try { data = JSON.parse(readFileSync('/tmp/runs.json', 'utf8')); } catch {}
+            const active = (data.workflow_runs ?? []).some(
+              (run) => String(run.id) !== process.env.RUN_ID && (run.status === 'queued' || run.status === 'in_progress'),
+            );
+            process.stdout.write(active ? 'queued' : '');
+          ")"
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+          echo "concurrency=${waiting}" >> "$GITHUB_OUTPUT"
+          echo "registry latest: ${current:-<none>}; competing run: ${waiting:-none}"
+
+      - name: Decide whether latest may advance
+        id: channel
+        env:
+          VERSION: ${{ needs.image.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CURRENT: ${{ steps.state.outputs.current }}
+          CONCURRENCY: ${{ steps.state.outputs.concurrency }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "
+            import { appendFileSync } from 'node:fs';
+            import { parseReleaseTag, resolveChannel } from './scripts/prepare-release.mjs';
+            const release = parseReleaseTag(process.env.RELEASE_TAG, process.env.VERSION);
+            const channel = resolveChannel({
+              release,
+              currentLatest: process.env.CURRENT || null,
+              concurrency: process.env.CONCURRENCY || null,
+            });
+            console.log(\`latest: \${channel.latest} (\${channel.reason})\`);
+            appendFileSync(process.env.GITHUB_OUTPUT, \`advance=\${channel.latest}\nreason=\${channel.reason}\n\`);
+          "
+
+      # `imagetools create` appends a tag to the already-pushed manifest list. No
+      # rebuild happens here, so the promoted digest is exactly the verified one.
+      - name: Tag the verified digest as latest
+        if: steps.channel.outputs.advance == 'true'
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          VERSION_TAG: ${{ needs.image.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${VERSION_TAG}"
+          docker buildx imagetools inspect "${IMAGE}:latest"
+
+      - name: Report a skipped promotion
+        if: steps.channel.outputs.advance != 'true'
+        env:
+          REASON: ${{ steps.channel.outputs.reason }}
+        run: |
+          echo "latest unchanged: ${REASON}"
