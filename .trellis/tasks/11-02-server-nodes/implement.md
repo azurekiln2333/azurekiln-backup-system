@@ -19,4 +19,4 @@ Implementation and review must stay within the backend ownership in `design.md`.
 
 - [x] Rename the root deployment files to `docker-compose.yml` and `docker-compose.build.yml`; update deployment/release/CI references and ordered discovery with legacy compatibility.
 - [x] Independently review the final rename, verify the affected behavior and update specs plus `done.md`.
-- [ ] Commit this assignment's changes using Conventional Commits and push the current branch, preserving other lanes' uncommitted work (new user authorization supersedes earlier no-commit instructions).
+- [x] Commit this assignment's changes using Conventional Commits and push the current branch, preserving other lanes' uncommitted work (new user authorization supersedes earlier no-commit instructions).

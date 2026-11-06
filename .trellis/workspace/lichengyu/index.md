@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-10-30
+- **Total Sessions**: 8
+- **Last Active**: 2026-11-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~239 | Active |
+| `journal-1.md` | ~276 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-11-07 | Node backend and docker-compose submission | `02ac84c`, `8a8747d` | `feat/nodes-and-notify` |
 | 7 | 2026-10-30 | 工作区清理：忽略 AI 工具目录并收尾仓库主机回退任务 | `b71964a`, `70f2e26`, `8973a14`, `ba374ef` | `fix/repository-host-fallback` |
 | 6 | 2026-10-25 | Compact sites, single-file backups and job cloning | `77629f5` | `feat/site-console-density` |
 | 5 | 2026-10-24 | Site inventory and shared backup job links | `2dcc72be0d2414a37b901170a145278d09d873ad` | `feat/site-management` |

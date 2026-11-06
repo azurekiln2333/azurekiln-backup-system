@@ -237,3 +237,40 @@ Implemented and independently accepted site repository links/notes, compact site
 ### Next Steps
 
 - 继续 10-18-api-tokens / 10-24-ghcr-image-pipeline / 10-18 子任务。
+
+
+## Session 8: Node backend and docker-compose submission
+<!-- trellis-session: v=2 fp=a4d33ca212fe1e11 -->
+
+**Date**: 2026-11-07
+**Task**: Node backend and docker-compose submission
+**Branch**: `feat/nodes-and-notify`
+
+### Summary
+
+Submitted scoped node backend and requested docker-compose filenames; preserved parallel work.
+
+### Main Changes
+
+- Added sealed node storage, session CRUD and scoped definition synchronization.
+- Renamed deployment files to docker-compose.yml and docker-compose.build.yml with legacy discovery.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `02ac84c` | feat(nodes): add node API, storage and job synchronization |
+| `8a8747d` | chore(docker): standardize docker-compose filenames |
+
+### Testing
+
+- [OK] Exact staged tree: 144 tests, 141 passed, 3 skipped; check and build passed.
+- [OK] Missing mapper fallback skipped unresolved definitions without outbound requests.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Coordinate API-token issuance, path-mapper fixes and remaining UI/notification lanes; shared task remains active.
