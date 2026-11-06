@@ -1,0 +1,6 @@
+{"file":".trellis/tasks/11-02-nodes-notify/prd.md","reason":"Shared ownership, no-commit and validation requirements"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"SQLite, task validation, encryption and lifecycle contracts"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Shared DTO and secret-preserving request contracts"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Node schema, service, storage and HTTP data flow"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse validation, encryption and redaction at their owners"}
+{"file":".trellis/tasks/10-18-api-tokens/design.md","reason":"Pending API token table and authenticator compatibility"}

@@ -492,7 +492,7 @@ package_release() {
   done
   # An installation bundle that cannot be deployed is not a bundle.
   local required
-  for required in 'compose\.yaml' '\.env\.docker\.example'; do
+  for required in 'docker-compose\.yml' 'docker-compose\.build\.yml' '\.env\.docker\.example'; do
     if ! printf '%s\n' "$members" | grep -Eq "(^|/)$required$"; then
       die "the release bundle is missing a required deployment file matching $required"
     fi

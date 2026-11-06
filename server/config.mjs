@@ -46,7 +46,8 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     rcloneSourceConfigPath: env.RCLONE_CONFIG_SOURCE || '', rcloneConfigPath,
     masterKeyPath: path.join(dataDir, 'secret.key'), masterKey: env.BACKUP_MASTER_KEY || '',
     systemEnvPath: env.SYSTEM_ENV_FILE ? path.resolve(cwd, env.SYSTEM_ENV_FILE) : (existsSync(path.join(cwd, '.env')) ? path.join(cwd, '.env') : ''),
-    systemComposePath: env.SYSTEM_COMPOSE_FILE ? path.resolve(cwd, env.SYSTEM_COMPOSE_FILE) : (existsSync(path.join(cwd, 'compose.yaml')) ? path.join(cwd, 'compose.yaml') : ''),
+    systemComposePath: env.SYSTEM_COMPOSE_FILE ? path.resolve(cwd, env.SYSTEM_COMPOSE_FILE)
+      : ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'].map((file) => path.join(cwd, file)).find((file) => existsSync(file)) || '',
   };
   const realDataDir = realpathSync(dataDir);
   if (config.sourceRoots.some((root) => isWithin(root, realDataDir) || isWithin(realDataDir, root))) throw new Error('Resolved DATA_DIR and SOURCE_ROOTS must not overlap.');

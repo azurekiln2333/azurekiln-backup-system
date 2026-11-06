@@ -205,7 +205,7 @@ test('release metadata is deterministic for identical inputs', () => {
 });
 
 test('deployment bundle paths reject absolute, escaping and private members', () => {
-  for (const allowed of ['azurekiln-backup-system/compose.yaml', 'azurekiln-backup-system/.env.docker.example']) {
+  for (const allowed of ['azurekiln-backup-system/docker-compose.yml', 'azurekiln-backup-system/.env.docker.example']) {
     assert.equal(assertBundlePath(allowed), allowed);
   }
   const rejected = [
@@ -260,20 +260,20 @@ test('sha256 sidecar matches the sha256sum output format', () => {
 test('a synthetic bundle archives exactly the declared members', async () => {
   const archive = buildBundleArchive(
     [
-      { member: 'app/compose.yaml', content: 'services: {}\n' },
+      { member: 'app/docker-compose.yml', content: 'services: {}\n' },
       { member: 'app/.env.docker.example', content: 'BACKUP_PORT=16323\n' },
     ],
     { sourceDateEpoch: 1700000000 },
   );
   const members = await readBundleMembers(archive);
   assert.deepEqual(members.map((member) => member.name), [
-    'app/compose.yaml',
+    'app/docker-compose.yml',
     'app/.env.docker.example',
   ]);
   assert.equal(members[0].content.toString('utf8'), 'services: {}\n');
   const again = buildBundleArchive(
     [
-      { member: 'app/compose.yaml', content: 'services: {}\n' },
+      { member: 'app/docker-compose.yml', content: 'services: {}\n' },
       { member: 'app/.env.docker.example', content: 'BACKUP_PORT=16323\n' },
     ],
     { sourceDateEpoch: 1700000000 },
@@ -320,8 +320,12 @@ test('prepareRelease packages the operator files and never local state', async (
     const members = await readBundleMembers(archiveBytes);
     const names = members.map((member) => member.name).sort();
     assert.deepEqual(names, BUNDLE_FILES.map((file) => `azurekiln-backup-system/${file}`).sort());
+    assert.ok(names.includes('azurekiln-backup-system/docker-compose.yml'));
+    assert.ok(names.includes('azurekiln-backup-system/docker-compose.build.yml'));
 
     const flat = members.map((member) => member.name).join('\n');
+    assert.doesNotMatch(flat, /(^|\/)compose(?:\.build)?\.ya?ml$/m, 'deployment bundles use the docker-compose prefix');
+    assert.doesNotMatch(flat, /(^|\/)docker-compose(?:\.build)?\.yaml$/m, 'deployment bundles use the .yml extension');
     assert.doesNotMatch(flat, /(^|\/)\.env$/m, 'the private .env must not be archived');
     assert.doesNotMatch(flat, /\.data\//, 'persistent state must not be archived');
     assert.doesNotMatch(flat, /node_modules\//, 'node_modules must not be archived');
@@ -368,7 +372,7 @@ test('prepareRelease packages the operator files and never local state', async (
 test('prepareRelease refuses a mismatched or missing deployment source', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-release-bad-'));
   try {
-    await writeFile(path.join(root, 'compose.yaml'), 'services: {}\n', 'utf8');
+    await writeFile(path.join(root, 'docker-compose.yml'), 'services: {}\n', 'utf8');
     await assert.rejects(
       () => prepareRelease({ rootDir: root, outDir: path.join(root, 'dist'), tag: 'v2.0.0', packageVersion: '1.4.0' }),
       /does not match package version/,

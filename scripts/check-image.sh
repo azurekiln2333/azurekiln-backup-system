@@ -11,7 +11,7 @@
 # prove: any non-amd64 runtime behaviour, updater selection, or persistence.
 #
 # Safety rules (see design.md "Verification and limits"):
-#   - never mount, read or write the operator's `.env`, `compose.yaml`, sources
+#   - never mount, read or write the operator's `.env`, `docker-compose.yml`, sources
 #     or the `backup-data` volume;
 #   - a throwaway env file with inert values is generated per run;
 #   - the container is always removed on exit unless --keep is passed;

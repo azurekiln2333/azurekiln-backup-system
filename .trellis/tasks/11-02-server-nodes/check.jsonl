@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/11-02-nodes-notify/prd.md","reason":"Shared ownership, no-commit and full test gate"}
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Task safety, SQLite persistence, encryption and redaction"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Shared schema compatibility and public DTO secrecy"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"End-to-end push/receive validation and authoritative state"}
+{"file":".trellis/tasks/10-18-api-tokens/design.md","reason":"Pending token dependency and least-privilege scope compatibility"}

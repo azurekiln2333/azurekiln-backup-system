@@ -197,7 +197,7 @@ main:
                 # and carries its runtime tools BEFORE the published 2-arch image
                 # is built. A multi-platform image cannot be loaded into the local
                 # image store, so candidate and publication are separate steps.
-                # The script never mounts .env, compose.yaml, sources or the
+                # The script never mounts .env, docker-compose.yml, sources or the
                 # production `backup-data` volume.
                 bash scripts/check-image.sh --build \
                   --platform linux/amd64 2>&1 | tee /tmp/check-image.log

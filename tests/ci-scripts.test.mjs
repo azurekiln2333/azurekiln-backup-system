@@ -95,6 +95,18 @@ test('references to the release helper stay honest', () => {
   if (existsSync(helperPath)) assert.match(ciVerify, /node "\$PREPARE_RELEASE"/);
 });
 
+test('deployment manifests, mounts and package checks use the docker-compose .yml files', () => {
+  const compose = read('docker-compose.yml');
+  const build = read('docker-compose.build.yml');
+  for (const file of ['compose.yaml', 'compose.build.yaml', 'compose.yml', 'compose.build.yml', 'docker-compose.yaml', 'docker-compose.build.yaml']) {
+    assert.equal(existsSync(path.join(root, file)), false, `${file} must not shadow the shipped manifests`);
+  }
+  assert.match(compose, /SYSTEM_COMPOSE_FILE: \/system-config\/docker-compose\.yml/);
+  assert.match(compose, /- \.\/docker-compose\.yml:\/system-config\/docker-compose\.yml:ro/);
+  assert.match(build, /docker compose -f docker-compose\.yml -f docker-compose\.build\.yml up -d --build/);
+  for (const required of ["'docker-compose\\.yml'", "'docker-compose\\.build\\.yml'"]) assert.ok(ciVerify.includes(required), `package checks require ${required}`);
+});
+
 test('both scripts avoid bash constructs that break on older runners', () => {
   for (const [name, source] of [['ci-verify.sh', ciVerify], ['check-image.sh', checkImage]]) {
     assert.ok(source.startsWith('#!/usr/bin/env bash'), `${name} needs a bash shebang`);

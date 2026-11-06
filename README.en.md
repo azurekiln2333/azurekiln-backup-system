@@ -40,9 +40,9 @@ The default production address is `http://127.0.0.1:16323`.
 
 ## Docker deployment
 
-`compose.yaml` runs a prebuilt image, `ghcr.io/azurekiln2333/azurekiln-backup-system:latest` by default, and `BACKUP_IMAGE` can point at a CNB image, a version tag, or a digest. The server needs neither Node.js nor a local build.
+`docker-compose.yml` runs a prebuilt image, `ghcr.io/azurekiln2333/azurekiln-backup-system:latest` by default, and `BACKUP_IMAGE` can point at a CNB image, a version tag, or a digest. The server needs neither Node.js nor a local build.
 
-Create `.env` from `.env.docker.example`. Configure a private `SETUP_TOKEN` or initial administrator credentials, set `BACKUP_PUBLIC_URL` to the deployment origin, and adjust the read-only source mounts and rclone configuration mount in `compose.yaml`.
+Create `.env` from `.env.docker.example`. Configure a private `SETUP_TOKEN` or initial administrator credentials, set `BACKUP_PUBLIC_URL` to the deployment origin, and adjust the read-only source mounts and rclone configuration mount in `docker-compose.yml`.
 
 ```sh
 docker compose pull
@@ -67,14 +67,14 @@ The updater does not inherit the host's Docker CLI credentials, so a private ima
 
 ### Automatic updates
 
-`compose.yaml` includes a `watchtower` service (`nickfedor/watchtower:1.23.2`). It checks for a new image every 600 seconds by default, and it only updates containers in this deployment labelled `com.centurylinklabs.watchtower.enable=true` — that is, this application's `backup` container. The updater labels itself disabled. Change the interval with `WATCHTOWER_POLL_INTERVAL`.
+`docker-compose.yml` includes a `watchtower` service (`nickfedor/watchtower:1.23.2`). It checks for a new image every 600 seconds by default, and it only updates containers in this deployment labelled `com.centurylinklabs.watchtower.enable=true` — that is, this application's `backup` container. The updater labels itself disabled. Change the interval with `WATCHTOWER_POLL_INTERVAL`.
 
-- **Disable updates**: set `com.centurylinklabs.watchtower.enable` to `"false"` on `backup` in `compose.yaml`, or pause the updater with `docker compose stop watchtower`. `docker compose up -d` starts a stopped updater again, so disable it persistently by changing the label or removing the service.
+- **Disable updates**: set `com.centurylinklabs.watchtower.enable` to `"false"` on `backup` in `docker-compose.yml`, or pause the updater with `docker compose stop watchtower`. `docker compose up -d` starts a stopped updater again, so disable it persistently by changing the label or removing the service.
 - **Monitor only**: add `WATCHTOWER_MONITOR_ONLY: "true"` to the updater; it reports new images without replacing the container.
 - **Pin a version**: set `BACKUP_IMAGE` in `.env` to an explicit version (`...:0.1.0`) or digest (`...@sha256:...`), then run `docker compose up -d --no-build`.
 - **Watch the log**: `docker compose logs -f watchtower`.
 
-An automatic update recreates the container with its existing mounts; it does **not** apply changes to `compose.yaml`, so new mounts, environment variables, and ports still need a manual `up -d`. Updates are **not zero-downtime**: the old container receives SIGTERM, a running backup is aborted and marked failed, queued runs become interrupted, and nothing is retried automatically. Pause the updater or pin a version before long backups.
+An automatic update recreates the container with its existing mounts; it does **not** apply changes to `docker-compose.yml`, so new mounts, environment variables, and ports still need a manual `up -d`. Updates are **not zero-downtime**: the old container receives SIGTERM, a running backup is aborted and marked failed, queued runs become interrupted, and nothing is retried automatically. Pause the updater or pin a version before long backups.
 
 Old images are removed after a successful update (`WATCHTOWER_CLEANUP=true`). **Rollback** therefore requires pulling the previous version tag or digest again: set `BACKUP_IMAGE` in `.env` to that tag or digest, stop the updater or disable the update label, then run `docker compose pull` and `docker compose up -d --no-build`. Rollback only switches the image; data stays in the existing `backup-data` volume. Never run `docker compose down -v` and never rename that volume. An older image is not guaranteed to be compatible with data written by a newer one.
 
@@ -83,7 +83,7 @@ Old images are removed after a successful update (`WATCHTOWER_CLEANUP=true`). **
 A source checkout can explicitly select the local-build override:
 
 ```sh
-docker compose -f compose.yaml -f compose.build.yaml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 That override uses `azurekiln-backup-system:local`, `pull_policy: build`, and `build: .`, and sets the `backup` update label to `false`. It also moves `watchtower` behind the `auto-update` profile so ordinary commands never start it; enable it deliberately with `--profile auto-update`. When switching an existing deployment from automatic updates to a local build, also run `docker compose stop watchtower`, otherwise the running updater keeps replacing the container.
@@ -94,7 +94,7 @@ Mount the directory containing an existing rclone configuration through `RCLONE_
 
 The File Management page lists only paths allowed by `SOURCE_ROOTS` and mounted in the container. It supports breadcrumbs, parent navigation, case-insensitive name search within the current directory, 100-item pages, refresh, file size, and modification time. The browser is read-only; a directory can be selected as the source of a new backup task. Symbolic links are neither displayed nor followed.
 
-For example, add these mounts to `compose.yaml`:
+For example, add these mounts to `docker-compose.yml`:
 
 ```yaml
 - /www/wwwroot:/sources/websites:ro
@@ -171,9 +171,9 @@ Stored credentials are encrypted with an independent key. Back up the persistent
 
 ## Application-configuration backup and import
 
-The built-in **System Configuration** task starts disabled. Set an rclone destination and a 7z password, then run it manually or enable a schedule. It takes an online `state.sqlite` snapshot and includes `secret.key`, the active `rclone.conf`, and readable deployment `.env` and `compose.yaml` files. This archive always uses AES-256-encrypted 7z. Keep its password separately.
+The built-in **System Configuration** task starts disabled. Set an rclone destination and a 7z password, then run it manually or enable a schedule. It takes an online `state.sqlite` snapshot and includes `secret.key`, the active `rclone.conf`, and readable deployment `.env` and `docker-compose.yml` files. This archive always uses AES-256-encrypted 7z. Keep its password separately.
 
-Compose mounts `.env` and `compose.yaml` read-only under `/system-config/`. Other deployments can set `SYSTEM_ENV_FILE` and `SYSTEM_COMPOSE_FILE`. Source data and reverse-proxy configuration are not included automatically.
+Compose mounts `.env` and `docker-compose.yml` read-only under `/system-config/`. Other deployments can set `SYSTEM_ENV_FILE` and `SYSTEM_COMPOSE_FILE`. Without an explicit Compose path, the working directory is checked for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, then `compose.yaml`; only an existing file is included. Source data and reverse-proxy configuration are not included automatically.
 
 To import, sign in as the current administrator and upload a System Configuration archive with its password. The upload limit is 256 MiB and the extracted configuration limit is 2 GiB. The application verifies the archive, hashes, SQLite integrity, and encryption key, then stages it at `/data/system-restore-pending`. Restart with `docker compose restart backup` to apply it. The previous state is preserved under `/data/system-restore-previous-*` for rollback. Deployment files are written as `/data/restored-deployment.env` and `/data/restored-compose.yaml` for manual review; read-only host mounts are not overwritten. If `BACKUP_MASTER_KEY` is supplied externally, set it to the imported key before restarting.
 

@@ -33,8 +33,8 @@ const VERSION_PATTERN =
 
 /** Files copied into the deployment archive, in archive order. */
 export const BUNDLE_FILES = [
-  'compose.yaml',
-  'compose.build.yaml',
+  'docker-compose.yml',
+  'docker-compose.build.yml',
   '.env.docker.example',
   'README.md',
   'README.en.md',

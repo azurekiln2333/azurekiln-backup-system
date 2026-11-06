@@ -40,9 +40,9 @@ npm start
 
 ## Docker 部署
 
-`compose.yaml` 使用預先建置的映像，預設為 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改為 CNB 映像、版本標籤或 digest。伺服器不需要 Node.js，也不需要本機建置。
+`docker-compose.yml` 使用預先建置的映像，預設為 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改為 CNB 映像、版本標籤或 digest。伺服器不需要 Node.js，也不需要本機建置。
 
-以 `.env.docker.example` 建立 `.env`，設定私密的 `SETUP_TOKEN` 或初始管理員憑證，將 `BACKUP_PUBLIC_URL` 設為部署來源網址，並依實際環境調整 `compose.yaml` 的唯讀來源掛載及 rclone 設定掛載。`/sources` 是容器內的備份來源目錄入口，主機路徑可依需要映射到它的子目錄；`/data` 是持久化的應用程式狀態，兩者不得重疊。
+以 `.env.docker.example` 建立 `.env`，設定私密的 `SETUP_TOKEN` 或初始管理員憑證，將 `BACKUP_PUBLIC_URL` 設為部署來源網址，並依實際環境調整 `docker-compose.yml` 的唯讀來源掛載及 rclone 設定掛載。`/sources` 是容器內的備份來源目錄入口，主機路徑可依需要映射到它的子目錄；`/data` 是持久化的應用程式狀態，兩者不得重疊。
 
 ```sh
 docker compose pull
@@ -67,14 +67,14 @@ docker login ghcr.io
 
 ### 自動更新
 
-`compose.yaml` 內建 `watchtower` 服務（映像 `nickfedor/watchtower:1.23.2`），預設每 600 秒檢查一次映像更新，只更新本部署中帶 `com.centurylinklabs.watchtower.enable=true` 標籤的容器，也就是本應用程式的 `backup` 容器；updater 本身標記為停用。輪詢間隔可透過 `WATCHTOWER_POLL_INTERVAL` 調整。
+`docker-compose.yml` 內建 `watchtower` 服務（映像 `nickfedor/watchtower:1.23.2`），預設每 600 秒檢查一次映像更新，只更新本部署中帶 `com.centurylinklabs.watchtower.enable=true` 標籤的容器，也就是本應用程式的 `backup` 容器；updater 本身標記為停用。輪詢間隔可透過 `WATCHTOWER_POLL_INTERVAL` 調整。
 
-- **停止自動更新**：將 `compose.yaml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改為 `"false"`，或執行 `docker compose stop watchtower` 暫停 updater。`docker compose up -d` 會重新啟動已停止的 updater，因此長期關閉應改標籤或移除該服務。
+- **停止自動更新**：將 `docker-compose.yml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改為 `"false"`，或執行 `docker compose stop watchtower` 暫停 updater。`docker compose up -d` 會重新啟動已停止的 updater，因此長期關閉應改標籤或移除該服務。
 - **僅監視不更新**：為 updater 加上 `WATCHTOWER_MONITOR_ONLY: "true"`，它只報告有新映像，不取代容器。
 - **固定版本**：將 `.env` 中的 `BACKUP_IMAGE` 改為明確版本（例如 `...:0.1.0`）或 digest（`...@sha256:...`），再執行 `docker compose up -d --no-build`。
 - **查看日誌**：`docker compose logs -f watchtower`。
 
-自動更新會沿用原有掛載重建容器，**不會**套用 `compose.yaml` 的變更（新增掛載、環境變數、連接埠仍需手動 `up -d`）。更新**沒有零停機保證**：重建時舊容器收到 SIGTERM，執行中的備份會被中止並標記為失敗，排隊中的執行會變為「已中斷」，且不會自動重試。長時間備份之前，建議先暫停 updater 或固定版本。
+自動更新會沿用原有掛載重建容器，**不會**套用 `docker-compose.yml` 的變更（新增掛載、環境變數、連接埠仍需手動 `up -d`）。更新**沒有零停機保證**：重建時舊容器收到 SIGTERM，執行中的備份會被中止並標記為失敗，排隊中的執行會變為「已中斷」，且不會自動重試。長時間備份之前，建議先暫停 updater 或固定版本。
 
 更新成功後舊映像會被刪除（`WATCHTOWER_CLEANUP=true`）。**回滾**需要重新拉取先前的版本或 digest：先在 `.env` 中將 `BACKUP_IMAGE` 改為要回到的版本標籤或 digest，停止 updater 或關閉更新標籤，然後執行 `docker compose pull` 與 `docker compose up -d --no-build`。回滾只切換映像，資料仍保留在原有 `backup-data` 卷中；不要執行 `docker compose down -v`，也不要重新命名該卷。回滾到舊版本不保證相容於之後版本寫入的資料。
 
@@ -83,7 +83,7 @@ docker login ghcr.io
 從原始碼檢出的部署可以明確選擇本機建置覆蓋檔：
 
 ```sh
-docker compose -f compose.yaml -f compose.build.yaml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 該覆蓋檔使用 `azurekiln-backup-system:local`、`pull_policy: build` 與 `build: .`，並將 `backup` 的更新標籤設為 `false`；`watchtower` 同時被放到 `auto-update` profile 下，一般指令不會啟動它，需要時以 `--profile auto-update` 明確啟用。從自動更新切換到本機建置時，請額外執行 `docker compose stop watchtower`，否則已執行的 updater 會繼續取代容器。
@@ -94,7 +94,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build
 
 「檔案管理」頁面只列出容器內已掛載且屬於 `SOURCE_ROOTS` 授權範圍的路徑。頁面支援階層導覽、上一層、目前目錄內不區分大小寫的名稱搜尋、每頁 100 項、重新整理，以及檔案大小與修改時間。瀏覽功能為唯讀；可選取目錄作為新備份任務的來源。不會顯示或追蹤符號連結。
 
-例如，在 `compose.yaml` 中加入：
+例如，在 `docker-compose.yml` 中加入：
 
 ```yaml
 - /www/wwwroot:/sources/websites:ro
@@ -171,9 +171,9 @@ MySQL/MariaDB 的「要求 TLS」也會驗證伺服器憑證。請提供可信�
 
 ## 系統設定備份與匯入
 
-內建的「系統設定」任務預設停用。設定 rclone 目的地及 7z 密碼後，可手動執行或啟用排程。任務會建立 `state.sqlite` 線上快照，並納入 `secret.key`、目前使用的 `rclone.conf`，以及可讀取的部署 `.env` 和 `compose.yaml`。此封存一律使用 AES-256 加密的 7z；密碼應另外保管。
+內建的「系統設定」任務預設停用。設定 rclone 目的地及 7z 密碼後，可手動執行或啟用排程。任務會建立 `state.sqlite` 線上快照，並納入 `secret.key`、目前使用的 `rclone.conf`，以及可讀取的部署 `.env` 和 `docker-compose.yml`。此封存一律使用 AES-256 加密的 7z；密碼應另外保管。
 
-Compose 會將 `.env` 與 `compose.yaml` 唯讀掛載至 `/system-config/`。其他部署方式可設定 `SYSTEM_ENV_FILE` 與 `SYSTEM_COMPOSE_FILE`。來源資料及反向代理設定不會自動納入。
+Compose 會將 `.env` 與 `docker-compose.yml` 唯讀掛載至 `/system-config/`。其他部署方式可設定 `SYSTEM_ENV_FILE` 與 `SYSTEM_COMPOSE_FILE`。未指定 Compose 路徑時，依 `docker-compose.yml`、`docker-compose.yaml`、`compose.yml`、`compose.yaml` 的順序檢查工作目錄，僅納入存在的檔案。來源資料及反向代理設定不會自動納入。
 
 匯入時，以目前的管理員登入並上傳「系統設定」封存及其密碼。上傳檔案上限為 256 MiB，解壓後的設定上限為 2 GiB。系統驗證封存、摘要、SQLite 完整性與加密密鑰後，暫存於 `/data/system-restore-pending`。執行 `docker compose restart backup` 後才會套用。原狀態保存在 `/data/system-restore-previous-*` 以供復原。部署檔案會寫入 `/data/restored-deployment.env` 及 `/data/restored-compose.yaml` 供人工檢查；唯讀的主機掛載不會被覆寫。若使用外部 `BACKUP_MASTER_KEY`，重新啟動前必須將其設定為匯入封存對應的密鑰。
 

@@ -229,3 +229,46 @@ Apply to node administration, scoped receiver authentication, definition transpo
 Wrong: authorize receiver writes using a node's outbound token or save transported public DTOs as new jobs on every push.
 
 Correct: require a receiver-local `sync` principal, project a secret-free definition and upsert through `store.saveSyncedJob(syncKey,validatedInput)` with receiver-local credentials.
+
+## Deployment Compose filenames and discovery
+
+### 1. Scope / Trigger
+
+Apply when changing deployment manifests, runtime discovery or release bundles. Keep filenames consistent so system backups capture the selected deployment.
+
+### 2. Signatures
+
+- `loadConfig(env = process.env, cwd = process.cwd())` returns `systemComposePath: string`.
+- `scripts/prepare-release.mjs` exports `BUNDLE_FILES`, including `docker-compose.yml` and `docker-compose.build.yml`.
+- Local build: `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
+
+### 3. Contracts
+
+- Ship `docker-compose.yml` and `docker-compose.build.yml`. The base manifest mounts `./docker-compose.yml:/system-config/docker-compose.yml:ro` and sets `SYSTEM_COMPOSE_FILE=/system-config/docker-compose.yml`.
+- A nonempty `SYSTEM_COMPOSE_FILE` resolves against `cwd` and wins even if absent. Otherwise select the first existing file in `['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']` under `cwd`; return `''` if none exist. Discovery does not create deployment files.
+- Keep serialized backup members `deployment-compose.yaml` and new-api `config/compose.yaml`, plus restore output `restored-compose.yaml`, unchanged. Deployment naming must not break existing archive readers.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Explicit Compose path, including a missing file | Use its resolved path; do not fall back |
+| Multiple default filenames exist | Select the first existing candidate in the documented order |
+| Only a legacy filename exists / no candidate exists | Select the legacy path / return `''` |
+| Release lacks either `.yml` manifest | Packaging/CI fails instead of publishing an incomplete bundle |
+
+### 5. Good / Base / Bad Cases
+
+- Good: explicit `SYSTEM_COMPOSE_FILE=deployment/custom.yml` overrides both defaults.
+- Base: an existing `.yaml` deployment remains discoverable after upgrading.
+- Bad: rename the host file but leave its container mount, release list or CI check pointing at the old name.
+
+### 6. Tests Required
+
+`tests/config.test.mjs` asserts each default filename, ordered precedence with multiple candidates, absent defaults and explicit relative/absolute paths. `tests/ci-scripts.test.mjs` checks mounts, build command and required package members; `tests/release.test.mjs` verifies exact bundle membership and rejects old root manifest names. Inspect a release generated from the checkout as well as synthetic fixtures.
+
+### 7. Wrong vs Correct
+
+Wrong: choose only `path.join(cwd, 'docker-compose.yml')`, silently dropping old deployments, or globally replace archive-member suffixes.
+
+Correct: use ordered discovery and retain archive contracts: `['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'].map(file => path.join(cwd, file)).find(existsSync) || ''`, with explicit environment configuration taking precedence.

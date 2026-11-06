@@ -38,9 +38,9 @@ npm start
 
 ## Docker 部署
 
-`compose.yaml` 使用预构建镜像，默认 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改为 CNB 镜像、版本标签或 digest。服务器不需要 Node.js，也不需要本地构建。
+`docker-compose.yml` 使用预构建镜像，默认 `ghcr.io/azurekiln2333/azurekiln-backup-system:latest`，可用 `BACKUP_IMAGE` 改为 CNB 镜像、版本标签或 digest。服务器不需要 Node.js，也不需要本地构建。
 
-使用 `.env.docker.example` 对应的变量配置 `.env`，填写私密的 `SETUP_TOKEN` 或初始管理员账号密码。按实际域名设置 `BACKUP_PUBLIC_URL`，修改 `compose.yaml` 中 `/sources` 下的目录挂载及现有 rclone 配置挂载。`/sources` 是容器内的备份源目录入口，宿主机路径可按需映射到它的子目录；`/data` 保存本应用的状态，两者不能重叠。登录后“文件管理”页面会列出 `SOURCE_ROOTS` 允许范围内的容器目录与文件。该页面只读，可从目录直接新建备份任务。
+使用 `.env.docker.example` 对应的变量配置 `.env`，填写私密的 `SETUP_TOKEN` 或初始管理员账号密码。按实际域名设置 `BACKUP_PUBLIC_URL`，修改 `docker-compose.yml` 中 `/sources` 下的目录挂载及现有 rclone 配置挂载。`/sources` 是容器内的备份源目录入口，宿主机路径可按需映射到它的子目录；`/data` 保存本应用的状态，两者不能重叠。登录后“文件管理”页面会列出 `SOURCE_ROOTS` 允许范围内的容器目录与文件。该页面只读，可从目录直接新建备份任务。
 
 ```shell
 docker compose pull
@@ -65,14 +65,14 @@ docker login ghcr.io
 
 ### 自动更新
 
-`compose.yaml` 内置 `watchtower` 服务（镜像 `nickfedor/watchtower:1.23.2`），默认每 600 秒检查一次镜像更新，只更新本部署中带 `com.centurylinklabs.watchtower.enable=true` 标签的容器，也就是本应用的 `backup` 容器；updater 自身标记为禁用。轮询间隔通过 `WATCHTOWER_POLL_INTERVAL` 调整。
+`docker-compose.yml` 内置 `watchtower` 服务（镜像 `nickfedor/watchtower:1.23.2`），默认每 600 秒检查一次镜像更新，只更新本部署中带 `com.centurylinklabs.watchtower.enable=true` 标签的容器，也就是本应用的 `backup` 容器；updater 自身标记为禁用。轮询间隔通过 `WATCHTOWER_POLL_INTERVAL` 调整。
 
-- **停止自动更新**：把 `compose.yaml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改为 `"false"`，或执行 `docker compose stop watchtower` 暂停 updater。`docker compose up -d` 会重新启动已停止的 updater，因此长期关闭应改标签或删除该服务。
+- **停止自动更新**：把 `docker-compose.yml` 中 `backup` 的 `com.centurylinklabs.watchtower.enable` 改为 `"false"`，或执行 `docker compose stop watchtower` 暂停 updater。`docker compose up -d` 会重新启动已停止的 updater，因此长期关闭应改标签或删除该服务。
 - **只监视不更新**：给 updater 增加 `WATCHTOWER_MONITOR_ONLY: "true"`，它只报告有新镜像，不替换容器。
 - **固定版本**：把 `.env` 中的 `BACKUP_IMAGE` 改为明确版本（如 `...:0.1.0`）或 digest（`...@sha256:...`），再执行 `docker compose up -d --no-build`。
 - **查看日志**：`docker compose logs -f watchtower`。
 
-自动更新会沿用原有挂载重建容器，**不会**应用 `compose.yaml` 的改动（新增挂载、环境变量、端口仍需手工 `up -d`）。更新**没有零停机保证**：重建时旧容器收到 SIGTERM，正在执行的备份会被中止并标记为失败，排队中的执行会变为“已中断”，且不会自动重试。长时间备份之前，建议先暂停 updater 或固定版本。
+自动更新会沿用原有挂载重建容器，**不会**应用 `docker-compose.yml` 的改动（新增挂载、环境变量、端口仍需手工 `up -d`）。更新**没有零停机保证**：重建时旧容器收到 SIGTERM，正在执行的备份会被中止并标记为失败，排队中的执行会变为“已中断”，且不会自动重试。长时间备份之前，建议先暂停 updater 或固定版本。
 
 更新成功后旧镜像会被删除（`WATCHTOWER_CLEANUP=true`）。**回滚**需要重新拉取之前的版本或 digest：先在 `.env` 中把 `BACKUP_IMAGE` 改为要回到的版本标签或 digest，停止 updater 或关闭更新标签，然后执行 `docker compose pull` 与 `docker compose up -d --no-build`。回滚只切换镜像，数据仍保留在原有 `backup-data` 卷中；不要执行 `docker compose down -v`，也不要重命名该卷。回滚到旧版本不保证兼容之后版本写入的数据。
 
@@ -81,7 +81,7 @@ docker login ghcr.io
 从源码检出的部署可以显式选择本地构建覆盖文件：
 
 ```shell
-docker compose -f compose.yaml -f compose.build.yaml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 该覆盖文件使用 `azurekiln-backup-system:local`、`pull_policy: build` 与 `build: .`，并把 `backup` 的更新标签设为 `false`；`watchtower` 同时被放到 `auto-update` profile 下，普通命令不会启动它，需要时用 `--profile auto-update` 显式启用。从自动更新切换到本地构建时，请额外执行 `docker compose stop watchtower`，否则已运行的 updater 会继续替换容器。
@@ -94,7 +94,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build
 
 登录后打开“文件管理”。只有一个允许的根目录时自动进入；多个根目录时先显示目录列表。支持面包屑、上一级、当前目录名称搜索（不区分大小写）、每页 100 项、刷新，以及文件大小和修改时间。目录排在文件之前；搜索覆盖当前目录全部条目，不递归搜索子目录。点击目录旁的加号或“备份此目录”，可将路径带入新任务。
 
-例如，在 `compose.yaml` 的 `volumes` 下添加实际宿主机目录：
+例如，在 `docker-compose.yml` 的 `volumes` 下添加实际宿主机目录：
 
 ```yaml
 - /www/wwwroot:/sources/websites:ro
@@ -179,9 +179,9 @@ MySQL/MariaDB 的“要求 TLS”同时验证服务端证书，需有效的信�
 
 ## 系统配置备份与导入
 
-“系统配置”是内置任务，初始为停用状态。编辑它，添加 rclone 目标、设置 7z 压缩包密码，并按需启用定时计划。执行时会对 `state.sqlite` 做在线快照，同时打包 `secret.key`、正在使用的 `rclone.conf`，以及容器可读取的部署 `.env` 和 `compose.yaml`。普通任务和系统任务都可以填写描述。系统归档强制采用 7z AES-256 加密；完成后可在该任务的“备份版本”中下载导出包。请单独保管压缩包密码。
+“系统配置”是内置任务，初始为停用状态。编辑它，添加 rclone 目标、设置 7z 压缩包密码，并按需启用定时计划。执行时会对 `state.sqlite` 做在线快照，同时打包 `secret.key`、正在使用的 `rclone.conf`，以及容器可读取的部署 `.env` 和 `docker-compose.yml`。普通任务和系统任务都可以填写描述。系统归档强制采用 7z AES-256 加密；完成后可在该任务的“备份版本”中下载导出包。请单独保管压缩包密码。
 
-Compose 将宿主机 `.env` 和 `compose.yaml` 只读挂载到 `/system-config/`。其他部署方式可设置 `SYSTEM_ENV_FILE`、`SYSTEM_COMPOSE_FILE` 为容器内可读取的文件路径；未指定时仅在工作目录存在对应文件时纳入归档。源目录的数据和反向代理配置不在归档中。
+Compose 将宿主机 `.env` 和 `docker-compose.yml` 只读挂载到 `/system-config/`。其他部署方式可设置 `SYSTEM_ENV_FILE`、`SYSTEM_COMPOSE_FILE` 为容器内可读取的文件路径；未指定时，部署配置按 `docker-compose.yml`、`docker-compose.yaml`、`compose.yml`、`compose.yaml` 的顺序检查工作目录，找到文件后才纳入归档。源目录的数据和反向代理配置不在归档中。
 
 导入时，先用当前管理员账号登录，打开“系统配置”任务并选择“导入配置”，上传该任务导出的 7z 包和密码。上传包上限为 256 MiB，解压后的配置上限为 2 GiB。服务会验证归档、文件摘要、SQLite 完整性和加密密钥，暂存到 `/data/system-restore-pending`；执行 `docker compose restart backup` 后才替换当前任务、设置、管理员账号和运行中的 rclone 配置。替换前的状态保存在 `/data/system-restore-previous-*`；若替换中断，下次启动会先恢复原配置，再重试待导入归档。导入后的备份版本会在打开“备份版本”时根据远端完成记录补认，远端暂时不可用时可稍后重试。归档中的部署文件另存为 `/data/restored-deployment.env`、`/data/restored-compose.yaml`，需要在宿主机人工核对并应用；只读挂载不会被自动覆盖。使用外部 `BACKUP_MASTER_KEY` 时，重启前必须将该环境变量改为归档对应的密钥；暂存目录中的 `deployment.env` 可供核对。
 

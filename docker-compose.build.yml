@@ -1,5 +1,5 @@
 # Local-build override. Use it explicitly, after the base file:
-#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 # Automatic updates stay off for locally built images, and the updater only
 # starts when you ask for the auto-update profile.
 services:
