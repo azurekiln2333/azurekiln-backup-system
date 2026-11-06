@@ -309,3 +309,53 @@ export function newJob(type = 'directory') {
     destinations: [{ remote: '', path: '' }],
   };
 }
+
+// Node inventory and definition synchronization share one public contract. Tokens are write-only.
+const nodePathText = z.string().trim().min(1).max(1024).refine((value) => !/[\0\r\n]/.test(value), '路径不能包含空字符或换行。');
+const absoluteNodePath = nodePathText.refine((value) => /^(?:[A-Za-z]:[\\/]|[\\/])/.test(value), '请输入完整的绝对路径。');
+export const nodePathRuleSchema = z.object({ from: absoluteNodePath, to: absoluteNodePath });
+export const nodeBaseUrlSchema = z.string().trim().min(1).max(2048).transform((value, ctx) => {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash || /[\0-\x20\\]/.test(value) || url.port === '0') throw new Error();
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '节点地址必须是无账号、查询参数或片段的 HTTP(S) 地址。' });
+    return z.NEVER;
+  }
+});
+export const nodeSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  baseUrl: nodeBaseUrlSchema,
+  token: z.string().max(4096).refine((value) => value === '' || !/\s|\0/.test(value), '令牌不能包含空白或空字符。').optional(),
+  enabled: z.boolean().default(true),
+  pathRules: z.array(nodePathRuleSchema).max(50).default([]),
+  jobOverrides: z.record(z.string().min(1).max(100).refine((value) => !['__proto__', 'prototype', 'constructor'].includes(value)), z.object({ sources: z.array(absoluteNodePath).max(100) })).default({})
+    .refine((value) => Object.keys(value).length <= 500, '最多为 500 个任务设置路径覆盖。'),
+});
+export const syncJobsRequestSchema = z.object({
+  jobs: z.array(z.object({
+    syncKey: z.string().trim().min(1).max(100),
+    job: z.record(z.unknown()),
+  }).strict()).max(500).refine((jobs) => new Set(jobs.map((job) => job.syncKey)).size === jobs.length, '同步任务标识不能重复。'),
+}).strict();
+export const nodeSyncJobResultSchema = z.object({
+  jobId: z.string().min(1).max(100),
+  jobName: z.string().max(100).optional(),
+  remoteJobId: z.string().uuid().optional(),
+  status: z.enum(['synced', 'unmapped', 'failed']),
+  sources: z.array(z.string().max(1024)).max(100).optional(),
+  unmapped: z.array(z.string().max(1024)).max(100).optional(),
+  code: z.string().regex(/^[A-Z0-9_]{1,80}$/).optional(),
+  message: z.string().max(2048).optional(),
+  paused: z.boolean().optional(),
+});
+export const nodeSyncSummarySchema = z.object({
+  at: z.string().datetime(),
+  status: z.enum(['succeeded', 'partial', 'failed']),
+  total: z.number().int().min(0).max(500),
+  synced: z.number().int().min(0).max(500),
+  unmapped: z.number().int().min(0).max(500),
+  failed: z.number().int().min(0).max(500),
+  jobs: z.array(nodeSyncJobResultSchema).max(500),
+});

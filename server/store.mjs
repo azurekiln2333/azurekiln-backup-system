@@ -1,12 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, randomUUID, createCipheriv, createDecipheriv, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { jobSchema, settingsSchema, siteSchema, SITE_BACKUP_JOB_LIMIT } from '../shared/contracts.mjs';
+import { jobSchema, settingsSchema, siteSchema, SITE_BACKUP_JOB_LIMIT, nodeSchema, nodeSyncSummarySchema } from '../shared/contracts.mjs';
 import { AppError } from './config.mjs';
 
 const jobSecrets = [['archive', 'password'], ['vaultwarden', 'database', 'password'], ['newapi', 'database', 'password'], ['newapi', 'logDatabase', 'password']];
 const settingsSecrets = [['smtp', 'password'], ['oidc', 'clientSecret'], ['rclone', 'configPassword']];
+const nodeSecrets = [['token']];
 export const SYSTEM_JOB_ID = 'system-config';
 const clone = (value) => structuredClone(value);
 const getAt = (object, keys) => keys.reduce((value, key) => value?.[key], object);
@@ -59,6 +60,11 @@ export function createStore(config) {
       PRIMARY KEY (site_id, job_id)
     );
     CREATE INDEX IF NOT EXISTS site_jobs_job ON site_jobs(job_id);
+    CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS synced_jobs (
+      sync_key TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
+    );
   `);
   function seal(value) {
     const iv = randomBytes(12);
@@ -115,8 +121,9 @@ export function createStore(config) {
     const settings = store.getSettings({ includeSecrets: true });
     for (const keys of settingsSecrets) secrets.push(getAt(settings, keys));
     for (const job of store.listJobs({ includeSecrets: true })) for (const keys of jobSecrets) secrets.push(getAt(job, keys));
+    for (const node of store.listNodes({ includeSecrets: true })) secrets.push(node.token);
     for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) result = result.split(secret).join('[redacted]');
-    return result.replace(/(password|client_secret|access_token|refresh_token|authorization)(\s*[=:]\s*)([^\s,;]+)/gi, '$1$2[redacted]').slice(0, 8000);
+    return result.replace(/\bakb_[A-Za-z0-9_-]{43}\b/g, '[redacted]').replace(/(password|client_secret|access_token|refresh_token|authorization)(\s*[=:]\s*)([^\s,;]+)/gi, '$1$2[redacted]').slice(0, 8000);
   }
   const lastRunSummary = (run) => Object.fromEntries(['id', 'status', 'phase', 'startedAt', 'finishedAt', 'createdAt', 'archiveBytes', 'error', 'progress'].map((field) => [field, run[field] ?? null]));
   // Associations live only in site_jobs; the public site projection always reads the live link set.
@@ -147,6 +154,61 @@ export function createStore(config) {
     }
   };
   const store = {
+    listNodes({ includeSecrets = false } = {}) {
+      return db.prepare('SELECT data FROM nodes ORDER BY rowid').all().map((row) => decode(row.data, nodeSecrets, includeSecrets));
+    },
+    getNode(id, { includeSecrets = false } = {}) {
+      const row = db.prepare('SELECT data FROM nodes WHERE id=?').get(id);
+      return row ? decode(row.data, nodeSecrets, includeSecrets) : null;
+    },
+    saveNode(input, id) {
+      const previous = id ? store.getNode(id, { includeSecrets: true }) : null;
+      if (id && !previous) throw new AppError('Server node does not exist.', 404, 'NODE_NOT_FOUND');
+      // Arrays and the override dictionary replace as a whole, including explicit empty values.
+      const parsed = retainSecrets(nodeSchema.parse({ ...previous, ...input }), previous, nodeSecrets);
+      if (!parsed.token) throw new AppError('Configure the node API token.', 400, 'NODE_TOKEN_REQUIRED');
+      const now = new Date().toISOString();
+      const node = { ...parsed, id: id || randomUUID(), createdAt: previous?.createdAt || now, updatedAt: now, lastSyncAt: previous?.lastSyncAt || null, lastStatus: previous?.lastStatus || null, lastSync: previous?.lastSync || null };
+      db.prepare('INSERT INTO nodes(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(node.id, encode(node, nodeSecrets));
+      return store.getNode(node.id);
+    },
+    deleteNode(id) { return db.prepare('DELETE FROM nodes WHERE id=?').run(id).changes > 0; },
+    recordNodeSync(id, input) {
+      const node = store.getNode(id, { includeSecrets: true });
+      if (!node) return null;
+      const summary = nodeSyncSummarySchema.parse(input);
+      summary.jobs = summary.jobs.map((job) => ({ ...job, ...(job.message ? { message: redact(job.message).slice(0, 2048) } : {}) }));
+      db.prepare('UPDATE nodes SET data=? WHERE id=?').run(encode({ ...node, lastSyncAt: summary.at, lastStatus: summary.status, lastSync: summary }, nodeSecrets), id);
+      return store.getNode(id);
+    },
+    getSyncedJob(syncKey, options) {
+      const row = db.prepare('SELECT job_id FROM synced_jobs WHERE sync_key=?').get(syncKey);
+      return row ? store.getJob(row.job_id, options) : null;
+    },
+    isSyncedJob(id) { return Boolean(db.prepare('SELECT 1 FROM synced_jobs WHERE job_id=?').get(id)); },
+    saveSyncedJob(syncKey, input) {
+      if (syncKey === SYSTEM_JOB_ID || input.type === 'system') throw new AppError('The built-in system task cannot be synchronized.', 400, 'SYNC_SYSTEM_JOB_FORBIDDEN');
+      return inTransaction(() => {
+        const previous = store.getSyncedJob(syncKey);
+        const job = store.saveJob(input, previous?.id);
+        db.prepare('INSERT INTO synced_jobs(sync_key,job_id) VALUES(?,?) ON CONFLICT(sync_key) DO UPDATE SET job_id=excluded.job_id').run(syncKey, job.id);
+        return job;
+      });
+    },
+    // Compatibility with the API-token workstream's table. This reader neither creates nor issues tokens.
+    authenticateSyncToken(header) {
+      const match = typeof header === 'string' && /^Bearer (akb_[A-Za-z0-9_-]{43})$/i.exec(header);
+      if (!match || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_tokens'").get()) return null;
+      const hash = createHash('sha256').update(match[1]).digest('hex');
+      const token = db.prepare('SELECT id,name,hash,scopes,enabled,expires_at,last_used_at FROM api_tokens WHERE hash=?').get(hash);
+      if (!token || !token.enabled || !/^[a-f0-9]{64}$/i.test(token.hash) || !timingSafeEqual(Buffer.from(token.hash, 'hex'), Buffer.from(hash, 'hex'))) return null;
+      if (token.expires_at && (!Number.isFinite(Date.parse(token.expires_at)) || Date.parse(token.expires_at) <= Date.now())) return null;
+      let scopes;
+      try { scopes = JSON.parse(token.scopes); } catch { return null; }
+      if (!Array.isArray(scopes) || scopes.some((scope) => typeof scope !== 'string')) return null;
+      if (!token.last_used_at || Date.parse(token.last_used_at) < Date.now() - 60000) db.prepare('UPDATE api_tokens SET last_used_at=? WHERE id=?').run(new Date().toISOString(), token.id);
+      return { id: token.id, name: token.name, scopes };
+    },
     ensureSystemJob() {
       if (store.getJob(SYSTEM_JOB_ID)) return store.getJob(SYSTEM_JOB_ID);
       const job = jobSchema.parse({

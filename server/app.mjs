@@ -11,6 +11,7 @@ import { createAuth } from './auth.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
 import { validateNewApiJob } from './newapi.mjs';
 import { createWatcher } from './watcher.mjs';
+import { createNodeService } from './nodes.mjs';
 
 const wrap = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
 const requiredText = z.string().trim().min(1).max(1024);
@@ -35,7 +36,7 @@ function cloneJobName(sourceName) {
   return `${head}${suffix}`;
 }
 
-function validateJob(input, config, { allowMissing = false } = {}) {
+function validateJob(input, config, { allowMissing = false, allowIncompleteSecrets = false } = {}) {
   const job = jobSchema.parse(input);
   if (job.watch.enabled && job.type !== 'directory') throw new AppError('File watching is available only for directory tasks.', 400, 'WATCH_DIRECTORY_ONLY');
   if (!job.destinations.length && (job.type !== 'system' || job.enabled)) throw new AppError('Add at least one backup destination.', 400, 'DESTINATION_REQUIRED');
@@ -67,7 +68,7 @@ function validateJob(input, config, { allowMissing = false } = {}) {
     const cron = new Cron(job.schedule.cron, { paused: true, timezone: job.schedule.timezone });
     cron.stop();
   } catch { throw new AppError('Enter a valid cron expression and IANA timezone.', 400, 'SCHEDULE_INVALID'); }
-  if (job.archive.encrypted && (job.archive.format === 'tar.gz' || (!job.archive.password && (job.type !== 'system' || job.enabled)))) throw new AppError('Encrypted backups require a password and 7z or ZIP format.', 400, 'ARCHIVE_ENCRYPTION_INVALID');
+  if (job.archive.encrypted && (job.archive.format === 'tar.gz' || (!job.archive.password && (job.type !== 'system' || job.enabled) && !(allowIncompleteSecrets && !job.enabled)))) throw new AppError('Encrypted backups require a password and 7z or ZIP format.', 400, 'ARCHIVE_ENCRYPTION_INVALID');
   return job;
 }
 
@@ -111,6 +112,11 @@ export async function createApp(options = {}) {
   }
   const scheduler = options.scheduler || (await import('./scheduler.mjs')).createScheduler({ store, backupService });
   const watcher = options.watcher || createWatcher({ store, config, backupService });
+  const nodeService = createNodeService({
+    store, config, backupService, scheduler, watcher, tokens: options.tokens,
+    validateJob: (job, validationOptions) => validateJob(job, config, validationOptions),
+    mapPath: options.nodePathMapper, fetchImpl: options.nodeFetch, timeoutMs: options.nodeRequestTimeoutMs,
+  });
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -127,7 +133,28 @@ export async function createApp(options = {}) {
   app.post('/api/auth/logout', auth.requireAuth, auth.checkOrigin, auth.csrf, auth.logout);
   app.get('/api/auth/oidc/start', wrap(auth.start));
   app.get('/api/auth/oidc/callback', wrap(auth.callback));
+  // Replica endpoints use an explicit sync-scoped Bearer token, independently of ambient sessions.
+  app.get('/api/sync/status', nodeService.requireSyncToken, (_req, res) => res.json(nodeService.status()));
+  app.put('/api/sync/jobs', nodeService.requireSyncToken, wrap((req, res) => res.json(nodeService.receive(req.body))));
+  // Keep controller/token administration on the administrator session boundary if global auth gains Bearer support.
+  app.use('/api/nodes', (req, _res, next) => req.session ? next() : next(new AppError('Sign in to manage server nodes.', 401, 'SESSION_REQUIRED')));
   app.use('/api', auth.requireAuth, auth.checkOrigin, auth.csrf);
+
+  app.get('/api/nodes', (_req, res) => res.json(store.listNodes()));
+  app.post('/api/nodes', wrap((req, res) => res.status(201).json(store.saveNode(z.record(z.unknown()).parse(req.body)))));
+  app.get('/api/nodes/:id', wrap((req, res) => {
+    const node = store.getNode(req.params.id);
+    if (!node) throw new AppError('Server node does not exist.', 404, 'NODE_NOT_FOUND');
+    res.json(node);
+  }));
+  app.patch('/api/nodes/:id', wrap((req, res) => res.json(store.saveNode(z.record(z.unknown()).parse(req.body), req.params.id))));
+  app.delete('/api/nodes/:id', wrap((req, res) => {
+    if (nodeService.isSyncing(req.params.id)) throw new AppError('Wait for this node synchronization before deleting it.', 409, 'NODE_SYNC_BUSY');
+    if (!store.deleteNode(req.params.id)) throw new AppError('Server node does not exist.', 404, 'NODE_NOT_FOUND');
+    res.status(204).end();
+  }));
+  app.post('/api/nodes/:id/test', wrap(async (req, res) => res.json(await nodeService.test(req.params.id))));
+  app.post('/api/nodes/:id/sync', wrap(async (req, res) => res.json(await nodeService.sync(req.params.id))));
 
   const getJob = (id) => {
     const job = store.getJob(id);
@@ -359,8 +386,8 @@ export async function createApp(options = {}) {
   });
   scheduler.start();
   watcher.start();
-  const close = async () => { scheduler.stop(); watcher.stop(); await backupService.shutdown(); if (!options.store) store.close(); };
-  return { app, store, config, backupService, rclone, scheduler, watcher, close };
+  const close = async () => { scheduler.stop(); watcher.stop(); await nodeService.close(); await backupService.shutdown(); if (!options.store) store.close(); };
+  return { app, store, config, backupService, rclone, scheduler, watcher, nodeService, close };
 }
 
 function folderBytes(folder) {

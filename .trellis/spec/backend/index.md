@@ -18,7 +18,7 @@ Read `backup-lifecycle.md` and the active task contracts. Run `npm test`, `npm r
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Backup Runtime Contracts](./backup-lifecycle.md) | APIs, persistence, adapters, lifecycle and safety tests | Implemented |
+| [Backup Runtime Contracts](./backup-lifecycle.md) | APIs, node sync, persistence, adapters, lifecycle and safety tests | Implemented |
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
 | [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | To fill |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |

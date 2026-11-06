@@ -179,3 +179,53 @@ Apply to job-type changes, source validation, archive preparation and clone APIs
 Wrong: `POST /jobs` with a copied public DTO, or `tar -C dirname(source) .` for a file task.
 
 Correct: clone the private configuration on the server, atomically save fresh paused job/link rows, and tar only the option-safe selected basename.
+
+## Server nodes and definition synchronization
+
+### 1. Scope / Trigger
+
+Apply to node administration, scoped receiver authentication, definition transport and node persistence. Path mapping and API-token issuance are separate integrations.
+
+### 2. Signatures
+
+- `createNodeService({store,config,validateJob,backupService,scheduler,watcher,tokens?,mapPath?,fetchImpl?,timeoutMs?})` provides `requireSyncToken`, `status`, `test`, `sync`, `receive`, `isSyncing` and async `close`.
+- Administrator-session routes: `GET/POST /api/nodes`, `GET/PATCH/DELETE /api/nodes/:id`, `POST /api/nodes/:id/test` and `/sync`.
+- Bearer receiver routes: `GET /api/sync/status`, `PUT /api/sync/jobs` with `{jobs:[{syncKey,job}]}` (at most 500, unique keys).
+- SQLite adds `nodes(id PRIMARY KEY,data)` and `synced_jobs(sync_key PRIMARY KEY,job_id UNIQUE REFERENCES jobs ON DELETE CASCADE)`.
+
+### 3. Contracts
+
+- Node fields are `{name,baseUrl,token?,enabled,pathRules,jobOverrides}`; rule arrays and override dictionaries replace as whole collections. Empty/omitted token updates preserve the sealed value. Public reads expose `tokenSet`, timestamps and the last summary; never plaintext tokens. Validate HTTP(S) URLs without credentials/query/fragment and retain explicit private-node addresses.
+- Summary: `{at,status,total,synced,unmapped,failed,jobs}`. Per-job statuses are `synced|unmapped|failed`; summary statuses are `succeeded|partial|failed`.
+- Send definitions only: remove passwords, runtime/history and system jobs. Exclude imported jobs to prevent echo loops. Stable `syncKey` updates the same receiver-local ID and preserves its history and credentials; missing local credentials pause the definition. Reject incoming secret fields and active-job updates.
+- Call external `mapPath(path,rules)` for source/dependent/absolute-destination paths. Explicit source overrides win. Any unresolved absolute path skips the whole task; a missing mapper conservatively leaves such tasks unmapped. Inject contract fixtures in backend tests so they do not depend on another lane's uncommitted mapper implementation.
+- Receiver tokens require explicit `sync` scope independently of session cookies. Use an injected authenticator or the planned API-token table reader; absent tokens fail closed. This workstream does not issue tokens.
+- Transport uses manual redirects, a default 15-second timeout, 1 MiB request/response limits and sanitized failures. Shutdown aborts requests and waits for pushes before closing storage.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing administrator session / mutation without CSRF | Existing 401 / 403 boundary |
+| Invalid Bearer token / insufficient scope | 401 `TOKEN_INVALID` / 403 `TOKEN_SCOPE_FORBIDDEN` |
+| Missing node / required token absent | 404 `NODE_NOT_FOUND` / 400 `NODE_TOKEN_REQUIRED` |
+| Disabled node / concurrent push or delete | 409 `NODE_DISABLED` / `NODE_SYNC_BUSY` |
+| Unresolved absolute path | `unmapped` result; no definition sent for that task |
+| Redirect / timeout / invalid response | Sanitized 502 `NODE_REDIRECT_FORBIDDEN` / `NODE_REQUEST_TIMEOUT` / `NODE_RESPONSE_INVALID` |
+| Invalid individual definition | Failed per-job result; other valid jobs can synchronize |
+
+### 5. Good / Base / Bad Cases
+
+- Good: one controller task reaches two different node-local paths; a second push updates each existing remote task.
+- Base: an encrypted definition arrives paused until local credentials are configured.
+- Bad: copy controller passwords, accept cookies as sync-token authorization, echo imported jobs back, or push unresolved absolute paths.
+
+### 6. Tests Required
+
+`tests/nodes.test.mjs` exercises real HTTP/SQLite CRUD, session/CSRF and scoped Bearer boundaries, token sealing/redaction, reopen/idempotence, per-node mapping and explicit overrides, nested TLS files, whole-task skips, secret/history preservation, independent invalid results and bounded sanitized transport. Verify the exact staged tree without mapper/notification/frontend WIP; run the repository test, type-check and build commands.
+
+### 7. Wrong vs Correct
+
+Wrong: authorize receiver writes using a node's outbound token or save transported public DTOs as new jobs on every push.
+
+Correct: require a receiver-local `sync` principal, project a secret-free definition and upsert through `store.saveSyncedJob(syncKey,validatedInput)` with receiver-local credentials.
