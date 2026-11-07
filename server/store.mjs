@@ -336,7 +336,9 @@ export function createStore(config) {
     deleteWatchBaseline(jobId) { db.prepare('DELETE FROM watch_baselines WHERE job_id=?').run(jobId); },
     getSettings({ includeSecrets = false } = {}) {
       const row = db.prepare('SELECT data FROM settings WHERE id=1').get();
-      return row ? decode(row.data, settingsSecrets, includeSecrets) : decode(encode(settingsSchema.parse({}), settingsSecrets), settingsSecrets, includeSecrets);
+      const settings = row ? decode(row.data, settingsSecrets, includeSecrets) : decode(encode(settingsSchema.parse({}), settingsSecrets), settingsSecrets, includeSecrets);
+      settings.notification = { ...settingsSchema.shape.notification.parse(settings.notification ?? {}), ...settings.notification };
+      return settings;
     },
     saveSettings(patch) {
       const previous = store.getSettings({ includeSecrets: true });

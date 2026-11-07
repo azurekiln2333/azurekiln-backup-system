@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import { KeyRound, Mail, RefreshCw, Save, Send, Settings2, ShieldCheck, Trash2 } from 'lucide-vue-next';
+import { FileText, KeyRound, Mail, RefreshCw, Save, Send, Settings2, ShieldCheck, Trash2 } from 'lucide-vue-next';
 import type { LocalStorageStatus, Settings } from '../types';
 import { api, errorMessage, write } from '../api';
 import { bytes, dateTime } from '../format';
 import { defaultSettings } from '../../../shared/contracts.mjs';
+import NotificationTemplateEditor from './NotificationTemplateEditor.vue';
 const emit = defineEmits<{ saved: []; message: [message: string] }>();
 const form = reactive<Settings>(structuredClone(defaultSettings));
 const active = ref('smtp');
-const sections = [{ id: 'smtp', label: '邮件通知', icon: Mail }, { id: 'oidc', label: '授权登录', icon: ShieldCheck }, { id: 'storage', label: '临时文件', icon: Settings2 }];
+const sections = [{ id: 'smtp', label: '邮件通知', icon: Mail }, { id: 'template', label: '通知模板', icon: FileText }, { id: 'oidc', label: '授权登录', icon: ShieldCheck }, { id: 'storage', label: '临时文件', icon: Settings2 }];
 const recipients = ref('');
 const tempGb = ref(10);
 const loading = ref(true);
@@ -19,11 +20,40 @@ const storageLoading = ref(false);
 const clearing = ref('');
 const error = ref('');
 const storageError = ref('');
+const templateSaving = ref(false);
+const templateEditor = ref<InstanceType<typeof NotificationTemplateEditor>>();
+// Human-readable labels for the variable names reported by the preview API.
+// The list itself is owned by server/notify-template.mjs (`TEMPLATE_VARIABLES`),
+// so this map only supplies Chinese descriptions and never drives which
+// variables are offered.
+const templateVariableLabels: Record<string, string> = {
+  total: '本次汇总的任务总数',
+  successCount: '成功数量',
+  warningCount: '有警告的数量',
+  failedCount: '失败数量',
+  startedAt: '最早开始时间',
+  finishedAt: '最后完成时间',
+  hostName: '主机名',
+  jobName: '任务名称',
+  type: '任务类型',
+  status: '执行状态',
+  durationSec: '耗时（秒）',
+  archiveBytes: '归档体积（字节）',
+  error: '错误摘要',
+  nodeName: '执行节点',
+  archiveName: '归档文件名',
+};
 const callbackUrl = computed(() => `${window.location.origin}/api/auth/oidc/callback`);
+/** Older installations store settings without the template field. */
+const templateSettings = computed(() => ({
+  subject: form.notification.template?.subject ?? '',
+  body: form.notification.template?.body ?? '',
+}));
 async function load() {
   try {
     Object.assign(form, await api<Settings>('/settings'));
     form.storage.successCleanupMode ??= 'immediate';
+    form.notification.template ??= { subject: '', body: '' };
     recipients.value = form.smtp.to.join('\n'); tempGb.value = form.storage.maxTempBytes / 1073741824;
   }
   catch (cause) { error.value = errorMessage(cause); }
@@ -65,13 +95,35 @@ async function testEmail() {
   catch (cause) { error.value = errorMessage(cause); }
   finally { testing.value = false; }
 }
+/**
+ * Persist only `notification.template`. An empty subject/body is meaningful
+ * ("use the built-in default"), so the patch is sent verbatim and never merged
+ * with the other settings sections.
+ */
+async function saveTemplate(template: { subject: string; body: string }) {
+  templateSaving.value = true;
+  try {
+    const saved = await write<Settings>('/settings', { notification: { template } }, 'PATCH');
+    saved.notification.template ??= { subject: '', body: '' };
+    Object.assign(form, saved);
+    // The child still owns the draft. Hand it the persisted template explicitly
+    // instead of relying on prop propagation timing after a `v-show` remount.
+    templateEditor.value?.syncFromSettings(saved.notification.template);
+    emit('saved');
+    emit('message', template.subject || template.body ? '通知模板已保存' : '已恢复默认通知模板');
+  } catch (cause) {
+    // The editor keeps its draft so nothing typed is lost.
+    templateEditor.value?.showError(cause);
+  } finally { templateSaving.value = false; }
+}
 void load();
 </script>
 
 <template>
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="系统设置"><button v-for="section in sections" :key="section.id" :class="{ active: active === section.id }" @click="active = section.id"><component :is="section.icon" :size="18" />{{ section.label }}</button></nav>
-    <form class="settings-form" novalidate @submit.prevent="save()">
+    <div class="settings-column">
+      <form class="settings-form" novalidate @submit.prevent="save()">
       <div v-if="error" class="notice error" role="alert">{{ error }}</div>
       <div v-if="loading" class="loading-line">正在读取设置…</div>
       <template v-else>
@@ -90,6 +142,7 @@ void load();
           </div>
           <div class="form-actions"><button type="button" class="button secondary" :disabled="testing || saving || !form.smtp.enabled" @click="testEmail"><Send :size="16" />{{ testing ? '发送中…' : '发送测试邮件' }}</button><button class="button primary" :disabled="saving"><Save :size="16" />保存设置</button></div>
         </section>
+        <NotificationTemplateEditor v-show="active === 'template'" id="notification-template" ref="templateEditor" :settings="templateSettings" :saving="templateSaving" :labels="templateVariableLabels" @save="saveTemplate" />
         <section v-show="active === 'oidc'" class="panel settings-panel">
           <div class="panel-heading"><h2>OAuth2 / OIDC 登录</h2><label class="toggle-row"><input v-model="form.oidc.enabled" class="switch" type="checkbox" /><span>{{ form.oidc.enabled ? '已启用' : '未启用' }}</span></label></div>
           <div class="panel-body">
@@ -124,6 +177,7 @@ void load();
           </div>
         </section>
       </template>
-    </form>
+      </form>
+    </div>
   </div>
 </template>

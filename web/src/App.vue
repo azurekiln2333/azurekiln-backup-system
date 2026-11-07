@@ -9,7 +9,7 @@ import { api, ApiError, errorMessage, setCsrfToken, uploadArchive, write } from 
 import { friendlyError, rawError } from './errors';
 import { bytes, dateTime, duration, phaseLabels, progress, shortTime, statusLabels } from './format';
 import { isPage, navSections, pageTitle, type Page } from './nav';
-import type { Archive, AuthStatus, Job, Overview, Run, Site, SiteInput, ToolStatus } from './types';
+import type { Archive, AppNode, AuthStatus, Job, NodeInput, NodeSyncSummary, NodeTestResult, Overview, Run, Site, SiteInput, ToolStatus } from './types';
 import AccountMenu from './components/AccountMenu.vue';
 import JobEditor from './components/JobEditor.vue';
 import JobsView from './components/JobsView.vue';
@@ -21,6 +21,8 @@ import StorageView from './components/StorageView.vue';
 import SiteRow from './components/SiteRow.vue';
 import SitesView from './components/SitesView.vue';
 import SiteEditor from './components/SiteEditor.vue';
+import NodesView from './components/NodesView.vue';
+import NodeEditor from './components/NodeEditor.vue';
 
 /** Hash router: the registry is the only place a page is declared. */
 function currentPage(): Page { const hash = window.location.hash.slice(1); return isPage(hash) ? hash : 'overview'; }
@@ -66,6 +68,21 @@ const siteEditorOpen = ref(false);
 const deletingSite = ref<Site>();
 const siteBusyId = ref('');
 let sitesRequest = 0;
+/**
+ * Server nodes carry their own load state, exactly like sites: a node read
+ * failure is never presented as "no nodes" and never hides the task list.
+ */
+const nodes = ref<AppNode[]>([]);
+const nodesLoading = ref(false);
+const nodesLoaded = ref(false);
+const nodesError = ref('');
+const nodesErrorDetail = ref('');
+const editingNode = ref<AppNode>();
+const nodeEditorOpen = ref(false);
+const deletingNode = ref<AppNode>();
+const nodeBusyId = ref('');
+const nodeBusyAction = ref<'' | 'test' | 'sync'>('');
+let nodesRequest = 0;
 const runs = ref<Run[]>([]);
 const runsTotal = ref(0);
 const runsPage = ref(0);
@@ -180,7 +197,7 @@ async function authenticate() {
   finally { authBusy.value = false; }
 }
 async function logout() {
-  try { await write('/auth/logout'); auth.value = await api('/auth/status'); setCsrfToken(''); jobs.value = []; jobsLoaded.value = false; jobsRequest += 1; jobsLoading.value = false; jobsError.value = ''; runs.value = []; overview.value = undefined; loaded.value = false; overviewStale.value = false; selectedJob.value = undefined; selectedRun.value = ''; sitesRequest += 1; sites.value = []; sitesLoaded.value = false; sitesLoading.value = false; sitesError.value = ''; sitesErrorDetail.value = ''; editingSite.value = undefined; siteEditorOpen.value = false; deletingSite.value = undefined; }
+  try { await write('/auth/logout'); auth.value = await api('/auth/status'); setCsrfToken(''); jobs.value = []; jobsLoaded.value = false; jobsRequest += 1; jobsLoading.value = false; jobsError.value = ''; runs.value = []; overview.value = undefined; loaded.value = false; overviewStale.value = false; selectedJob.value = undefined; selectedRun.value = ''; sitesRequest += 1; sites.value = []; sitesLoaded.value = false; sitesLoading.value = false; sitesError.value = ''; sitesErrorDetail.value = ''; editingSite.value = undefined; siteEditorOpen.value = false; deletingSite.value = undefined; nodesRequest += 1; nodes.value = []; nodesLoaded.value = false; nodesLoading.value = false; nodesError.value = ''; nodesErrorDetail.value = ''; editingNode.value = undefined; nodeEditorOpen.value = false; deletingNode.value = undefined; nodeBusyId.value = ''; nodeBusyAction.value = ''; }
   catch (cause) { error.value = errorMessage(cause); }
 }
 async function loadRuns() {
@@ -218,6 +235,33 @@ async function loadSites(foreground = false): Promise<boolean> {
     if (request === sitesRequest) sitesLoading.value = false;
   }
 }
+/**
+ * Server-node inventory with the same independent-outcome contract as sites.
+ * Stale responses are dropped, and an open editor keeps its draft when a
+ * background refresh reports the node is gone.
+ */
+async function loadNodes(foreground = false): Promise<boolean> {
+  const request = ++nodesRequest;
+  if (foreground || !nodesLoaded.value) nodesLoading.value = true;
+  if (foreground) { nodesError.value = ''; nodesErrorDetail.value = ''; }
+  try {
+    const list = await api<AppNode[]>('/nodes');
+    if (request !== nodesRequest) return true;
+    nodes.value = list;
+    nodesError.value = '';
+    nodesErrorDetail.value = '';
+    nodesLoaded.value = true;
+    if (deletingNode.value && !list.some(node => node.id === deletingNode.value?.id)) deletingNode.value = undefined;
+    return true;
+  } catch (cause) {
+    if (request !== nodesRequest) return true;
+    nodesError.value = friendlyError(cause, '无法读取服务器节点，请稍后重试');
+    nodesErrorDetail.value = rawError(cause);
+    return false;
+  } finally {
+    if (request === nodesRequest) nodesLoading.value = false;
+  }
+}
 async function refresh(silent = false) {
   if (refreshing.value) return;
   refreshing.value = true;
@@ -236,11 +280,14 @@ async function refresh(silent = false) {
     overviewStale.value = true;
     if (!handleUnauthorized(cause) && !silent) error.value = errorMessage(cause);
   }
+  // Nodes load on their own as well: a node outage must not blank the console.
+  const nodesPromise = loadNodes();
   try {
     // Wait for the independent loads before releasing the guard, so a slow
     // /jobs read cannot overlap the next poll/foreground refresh.
     const [jobsOk, sitesOk] = await Promise.all([jobsPromise, sitesPromise]);
-    if (!jobsOk || !sitesOk) failed = true;
+    const nodesOk = await nodesPromise;
+    if (!jobsOk || !sitesOk || !nodesOk) failed = true;
     // Only a fully clean refresh clears the notice: a /jobs failure raised by
     // loadJobs must not be erased by an unrelated /overview success above.
     if (!failed) error.value = '';
@@ -378,6 +425,66 @@ async function deleteSite() {
 }
 /** Reverse navigation: a linked task opens its site in the dedicated page. */
 function openSite(site: Site) { selectedJob.value = undefined; navigate('sites'); editSite(site); }
+
+/* ---------- Server nodes ---------- */
+
+function createNode() { editingNode.value = undefined; nodeEditorOpen.value = true; }
+function editNode(node: AppNode) { editingNode.value = node; nodeEditorOpen.value = true; }
+function closeNodeEditor() { nodeEditorOpen.value = false; editingNode.value = undefined; }
+/** App owns the node HTTP write; the editor awaits it to keep its draft on failure. */
+const saveNode = (id: string | undefined, input: NodeInput) => id ? write<AppNode>(`/nodes/${id}`, input, 'PATCH') : write<AppNode>('/nodes', input);
+async function nodeSaved(node: AppNode) {
+  closeNodeEditor();
+  notify(node.name ? `已保存节点「${node.name}」` : '节点已保存');
+  await loadNodes(true);
+}
+async function deleteNode() {
+  if (!deletingNode.value) return;
+  nodeBusyId.value = deletingNode.value.id;
+  try {
+    await write(`/nodes/${deletingNode.value.id}`, undefined, 'DELETE');
+    deletingNode.value = undefined;
+    notify('节点已删除，控制器上的任务不受影响');
+    await loadNodes(true);
+  } catch (cause) { error.value = friendlyError(cause, '删除节点失败，本机任务未受影响'); }
+  finally { nodeBusyId.value = ''; }
+}
+/**
+ * Connection test and push both run on the server, which holds the token.
+ * A rejected token or unreachable host arrives as an ApiError; nothing here may
+ * report success for a check the server did not confirm.
+ */
+async function testNode(node: AppNode) {
+  if (nodeBusyId.value) return;
+  nodeBusyId.value = node.id;
+  nodeBusyAction.value = 'test';
+  try {
+    const result = await write<NodeTestResult>(`/nodes/${node.id}/test`, {});
+    notify(`已连接「${node.name}」，节点上现有 ${result.jobs} 个任务`);
+  } catch (cause) {
+    if (cause instanceof ApiError && ['NODE_TOKEN_REJECTED', 'NODE_SCOPE_REJECTED'].includes(cause.code ?? '')) {
+      error.value = `「${node.name}」拒绝了该令牌，请在节点上重新创建带 sync 权限的 API 令牌。`;
+    } else error.value = friendlyError(cause, '测试连接失败，请检查地址、令牌与网络');
+  }
+  finally { nodeBusyId.value = ''; nodeBusyAction.value = ''; }
+}
+async function syncNode(node: AppNode) {
+  if (nodeBusyId.value) return;
+  nodeBusyId.value = node.id;
+  nodeBusyAction.value = 'sync';
+  try {
+    // The response is the authoritative summary; the reload then refreshes
+    // `lastSyncAt`/`lastStatus` so the row and its counts cannot disagree.
+    const summary = await write<NodeSyncSummary>(`/nodes/${node.id}/sync`, {});
+    await loadNodes(true);
+    notify(`已推送「${node.name}」：成功 ${summary.synced} 个${summary.unmapped ? `，需映射 ${summary.unmapped} 个` : ''}${summary.failed ? `，失败 ${summary.failed} 个` : ''}`);
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.code === 'NODE_DISABLED') error.value = '节点已停用，启用后才能同步。';
+    else if (cause instanceof ApiError && cause.code === 'NODE_SYNC_BUSY') error.value = '该节点正在同步，请等待本次同步完成。';
+    else error.value = friendlyError(cause, '同步失败，请检查节点令牌与路径映射');
+  }
+  finally { nodeBusyId.value = ''; nodeBusyAction.value = ''; }
+}
 function openSystemImport() {
   systemImportFile.value = undefined;
   systemImportPassword.value = '';
@@ -446,7 +553,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
     </aside>
     <div class="workspace">
       <main class="main-content">
-        <header class="page-heading"><h1>{{ title }}</h1><div class="heading-actions"><button v-if="['overview','jobs','sites','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'sites'" class="button primary" @click="createSite()"><Plus :size="17" />新增站点</button><button v-else-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
+        <header class="page-heading"><h1>{{ title }}</h1><div class="heading-actions"><button v-if="['overview','jobs','sites','nodes','runs'].includes(page)" class="icon-button bordered" title="刷新" aria-label="刷新" :disabled="refreshing" @click="refresh()"><RefreshCw :size="18" :class="{ spinning: refreshing }" /></button><button v-if="page === 'sites'" class="button primary" @click="createSite()"><Plus :size="17" />新增站点</button><button v-else-if="page === 'nodes'" class="button primary" @click="createNode()"><Plus :size="17" />添加节点</button><button v-else-if="page === 'overview' || page === 'jobs'" class="button primary" @click="createJob()"><Plus :size="17" />新建任务</button></div></header>
         <div v-if="error" class="notice error" role="alert">{{ error }}<button class="icon-button" title="关闭错误提示" aria-label="关闭错误提示" @click="error = ''"><X :size="16" /></button></div>
         <!-- A failed jobs refresh keeps the last good list; this keeps the failure visible above it. -->
         <div v-if="page === 'jobs' && jobsError && jobs.length && !error" class="notice error" role="alert"><span>{{ jobsError }}</span><button type="button" class="text-button" @click="refresh()"><RefreshCw :size="14" />重新读取</button></div>
@@ -462,6 +569,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
         <!-- A jobs read that never succeeded must not render as an empty task list. -->
         <section v-else-if="page === 'jobs'" class="panel"><div class="panel-body"><div class="notice error" role="alert"><span>任务列表尚未成功加载，无法显示任务。</span><button type="button" class="text-button" @click="refresh()"><RefreshCw :size="14" />重新读取</button></div></div></section>
         <SitesView v-else-if="page === 'sites'" :sites="sites" :jobs="jobs" :loaded="sitesLoaded" :jobs-loaded="jobsLoaded" :loading="sitesLoading" :error="sitesError" :error-detail="sitesErrorDetail" :busy-id="siteBusyId" @create="createSite()" @edit="editSite" @remove="deletingSite = $event" @open-job="openJob" @reload="loadSites(true)" />
+        <NodesView v-else-if="page === 'nodes'" :nodes="nodes" :loaded="nodesLoaded" :loading="nodesLoading" :error="nodesError" :error-detail="nodesErrorDetail" :busy-id="nodeBusyId" :busy-action="nodeBusyAction" @create="createNode()" @edit="editNode" @remove="deletingNode = $event" @test="testNode" @sync="syncNode" @reload="loadNodes(true)" @message="notify" />
         <template v-else-if="page === 'runs'">
           <section class="panel runs-panel"><div class="panel-heading runs-toolbar"><div class="filter-group"><select v-model="runFilter" aria-label="按任务筛选"><option value="">全部任务</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.name }}</option></select><select v-model="runStatusFilter" aria-label="按状态筛选"><option value="">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">执行中</option><option value="queued">排队中</option><option value="cancelled">已取消</option><option value="interrupted">已中断</option></select></div><span class="muted record-count">{{ runsTotal }} 条记录</span></div>
           <div class="panel-body runs-body">
@@ -479,6 +587,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
   </div>
   <JobEditor v-if="editing" :job="editJob" :jobs="jobs" :initial-type="initialType" :initial-source-path="initialSourcePath" @close="editing = false" @saved="saved" @batch-saved="batchSaved" />
   <SiteEditor v-if="siteEditorOpen" :site="editingSite" :jobs="jobs" :jobs-loaded="jobsLoaded" :sites="sites" :save="saveSite" @close="closeSiteEditor" @saved="siteSaved" />
+  <NodeEditor v-if="nodeEditorOpen" :node="editingNode" :jobs="jobs" :jobs-loaded="jobsLoaded" :nodes="nodes" :save="saveNode" @close="closeNodeEditor" @saved="nodeSaved" />
   <RunDetail v-if="selectedRun" :id="selectedRun" @close="selectedRun = ''" @changed="refresh()" />
   <Modal v-if="selectedJob" :title="selectedJob.name" wide @close="selectedJob = undefined">
     <nav class="dialog-tabs"><button :class="{ active: jobDetailTab === 'summary' }" @click="jobDetailTab = 'summary'">任务信息</button><button :class="{ active: jobDetailTab === 'archives' }" @click="jobDetailTab = 'archives'">备份版本 <span class="count">{{ archives.length }}</span></button></nav>
@@ -496,5 +605,6 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearTimeout(toa
   </Modal>
   <Modal v-if="deleting" title="删除任务" @close="deleting = undefined"><div class="modal-body confirm-body"><Trash2 :size="29" class="text-danger" /><p>确认删除「{{ deleting.name }}」？</p></div><footer class="modal-footer"><button class="button secondary" @click="deleting = undefined">取消</button><button class="button destructive" :disabled="busyId === deleting.id" @click="deleteJob"><Trash2 :size="16" />删除任务</button></footer></Modal>
   <Modal v-if="deletingSite" title="删除站点" @close="deletingSite = undefined"><div class="modal-body confirm-body"><Trash2 :size="29" class="text-danger" /><p>确认删除「{{ deletingSite.name }}」？只会移除站点记录和任务关联，关联的备份任务、历史版本和归档都会保留。</p></div><footer class="modal-footer"><button class="button secondary" @click="deletingSite = undefined">取消</button><button class="button destructive" :disabled="siteBusyId === deletingSite.id" @click="deleteSite"><Trash2 :size="16" />删除站点</button></footer></Modal>
+  <Modal v-if="deletingNode" title="删除节点" @close="deletingNode = undefined"><div class="modal-body confirm-body"><Trash2 :size="29" class="text-danger" /><p>确认删除「{{ deletingNode.name }}」？只会移除本机的节点配置，控制器上的备份任务、历史版本和归档都会保留，节点上已同步的任务也不会被删除。</p></div><footer class="modal-footer"><button class="button secondary" @click="deletingNode = undefined">取消</button><button class="button destructive" :disabled="nodeBusyId === deletingNode.id" @click="deleteNode"><Trash2 :size="16" />删除节点</button></footer></Modal>
   <Transition name="toast"><div v-if="toast" class="toast-message" role="status"><CheckCircle2 :size="19" /><span>{{ toast }}</span><button class="icon-button" title="关闭通知" aria-label="关闭通知" @click="toast = ''"><X :size="16" /></button></div></Transition>
 </template>

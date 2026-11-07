@@ -2,10 +2,24 @@ import type { z } from 'zod';
 import { jobSchema, settingsSchema, siteSchema } from '../../shared/contracts.mjs';
 
 export type JobInput = z.infer<typeof jobSchema>;
+/**
+ * The custom notification template.
+ *
+ * The shared `settingsSchema` owns the field; this local declaration keeps the
+ * web build honest until that shared field is present in the compiled contract.
+ * An empty string means "use the built-in default template".
+ */
+export interface NotificationTemplate {
+  subject: string;
+  body: string;
+}
 export type Settings = z.infer<typeof settingsSchema> & {
   smtp: { passwordSet?: boolean };
   oidc: { clientSecretSet?: boolean };
   rclone: { configPasswordSet?: boolean };
+  notification: z.infer<typeof settingsSchema>['notification'] & {
+    template?: NotificationTemplate;
+  };
 };
 export interface Job extends JobInput {
   id: string;
@@ -33,6 +47,83 @@ export interface Site extends SiteInput {
   id: string;
   createdAt: string;
   updatedAt: string;
+}
+/**
+ * Server node the console pushes task definitions to.
+ *
+ * The node is another installation of this application authenticated with one of
+ * its API tokens, so `tokenSet` is the only token fact the API exposes — the
+ * token value never returns after it is saved.
+ */
+export interface NodePathRule {
+  /** Prefix as written on this controller. */
+  from: string;
+  /** Prefix on the node that replaces `from`. */
+  to: string;
+}
+export interface NodeJobOverride {
+  /** Mapped sources for one task, overriding the node's path rules. */
+  sources: string[];
+}
+export type NodeSyncStatus = 'succeeded' | 'partial' | 'failed';
+export interface NodeSyncJobResult {
+  jobId: string;
+  jobName?: string;
+  /** The node's local task id; present only for a task it accepted. */
+  remoteJobId?: string;
+  /** `synced` pushed; `unmapped` has no usable path mapping; `failed` was rejected by the node. */
+  status: 'synced' | 'unmapped' | 'failed';
+  /** Controller-side sources after mapping, when the mapping succeeded. */
+  sources?: string[];
+  /** Paths that could not be mapped; the task is skipped instead of pushing wrong paths. */
+  unmapped?: string[];
+  /** Server error code, e.g. `NODE_PATH_MAPPING_FAILED`. */
+  code?: string;
+  message?: string;
+  /** The node stored the definition paused because credentials stay local. */
+  paused?: boolean;
+}
+/** Result of one push, recorded on the node as `lastSync` alongside `lastSyncAt`/`lastStatus`. */
+export interface NodeSyncSummary {
+  at: string;
+  status: NodeSyncStatus;
+  total: number;
+  synced: number;
+  unmapped: number;
+  failed: number;
+  jobs: NodeSyncJobResult[];
+}
+export interface AppNode {
+  id: string;
+  name: string;
+  baseUrl: string;
+  /** True when a token is stored; the value itself is redacted to `[redacted]` in responses. */
+  tokenSet?: boolean;
+  enabled: boolean;
+  pathRules: NodePathRule[];
+  jobOverrides: Record<string, NodeJobOverride>;
+  lastSyncAt?: string | null;
+  lastStatus?: NodeSyncStatus | null;
+  /** Per-task outcome of the latest push; `null` until the node was synced once. */
+  lastSync?: NodeSyncSummary | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+export interface NodeInput {
+  name: string;
+  baseUrl: string;
+  /** Omitted or empty on edit keeps the stored token. */
+  token?: string;
+  enabled: boolean;
+  pathRules: NodePathRule[];
+  jobOverrides: Record<string, NodeJobOverride>;
+}
+/** Test response from `POST /api/nodes/:id/test`; a failure is an ApiError, not `ok:false`. */
+export interface NodeTestResult {
+  ok: true;
+  version: string;
+  jobs: number;
+  message?: string;
 }
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export interface Target {

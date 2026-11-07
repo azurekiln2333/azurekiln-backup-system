@@ -4,9 +4,10 @@ import { z, ZodError } from 'zod';
 import { readdirSync, existsSync, lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { batchJobSchema, jobSchema, settingsSchema } from '../shared/contracts.mjs';
+import { batchJobSchema, jobSchema, notificationTemplateSchema, settingsSchema } from '../shared/contracts.mjs';
 import { AppError, isWithin, loadConfig, resolveSourcePath } from './config.mjs';
 import { createStore, mergeConfig, SYSTEM_JOB_ID } from './store.mjs';
+import { DEFAULT_TEMPLATE, renderNotification, sampleContext, TEMPLATE_VARIABLES } from './notify-template.mjs';
 import { createAuth } from './auth.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from './system-restore.mjs';
 import { validateNewApiJob } from './newapi.mjs';
@@ -312,6 +313,19 @@ export async function createApp(options = {}) {
   app.get('/api/storage', wrap(async (_req, res) => res.json(await backupService.storage())));
   app.delete('/api/storage/local-archives', wrap(async (_req, res) => res.json(await backupService.clearLocalArchives())));
   app.delete('/api/storage/local-archives/:id', wrap(async (req, res) => res.json(await backupService.clearLocalArchive(req.params.id))));
+  app.post('/api/settings/notification-template/preview', wrap((req, res) => {
+    // Preview only: nothing is persisted, so this route never touches the store
+    // and cannot change what a real notification will render.
+    const input = z.object({
+      template: notificationTemplateSchema.optional(),
+      ctx: z.record(z.unknown()).optional(),
+    }).parse(req.body ?? {});
+    // Treat an omitted template as "preview the effective template", which is what
+    // the settings page shows before the operator edits anything.
+    const template = input.template ?? store.getSettings().notification.template;
+    const context = input.ctx ?? sampleContext();
+    res.json({ ...renderNotification(template, context), template, ctx: context, variables: TEMPLATE_VARIABLES, defaults: DEFAULT_TEMPLATE });
+  }));
   app.post('/api/settings/test-email', wrap(async (req, res) => {
     const input = z.object({ to: z.string().email().optional() }).parse(req.body || {});
     const settings = store.getSettings({ includeSecrets: true });

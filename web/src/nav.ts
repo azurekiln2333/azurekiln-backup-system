@@ -1,5 +1,5 @@
 import type { Component } from 'vue';
-import { Activity, Folder, FolderOpen, Globe, HardDrive, LayoutDashboard, Settings2 } from 'lucide-vue-next';
+import { Activity, Folder, FolderOpen, Globe, HardDrive, LayoutDashboard, Server, Settings2 } from 'lucide-vue-next';
 
 /**
  * Console navigation registry.
@@ -23,7 +23,7 @@ export interface NavItem {
   group: string;
 }
 
-export type Page = 'overview' | 'jobs' | 'sites' | 'files' | 'runs' | 'storage' | 'settings';
+export type Page = 'overview' | 'jobs' | 'sites' | 'nodes' | 'files' | 'runs' | 'storage' | 'settings';
 
 export const navItems: readonly NavItem[] = [
   { id: 'overview', label: '备份概览', icon: LayoutDashboard, group: '工作区' },
@@ -31,6 +31,7 @@ export const navItems: readonly NavItem[] = [
   { id: 'sites', label: '站点管理', icon: Globe, group: '工作区' },
   { id: 'files', label: '文件管理', icon: FolderOpen, group: '工作区' },
   { id: 'runs', label: '执行记录', icon: Activity, group: '监控' },
+  { id: 'nodes', label: '服务器节点', icon: Server, group: '系统' },
   { id: 'storage', label: '远端存储', icon: HardDrive, group: '系统' },
   { id: 'settings', label: '系统设置', icon: Settings2, group: '系统' },
 ];

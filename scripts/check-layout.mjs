@@ -75,7 +75,11 @@ const probe = (page) => page.evaluate(() => {
     // the settings page shell: tab rail + a column whose contents must all be panels
     if (el.classList.contains('settings-layout')) {
       const column = el.querySelector('.settings-column') ?? el.children[1] ?? null;
-      const ok = Boolean(column) && [...column.children].every((c) => c.classList.contains('panel') || c.tagName === 'TEMPLATE' || c.classList.contains('notice') || c.classList.contains('loading-line'));
+      // A single `.settings-form` wrapper is allowed so the panels can share one
+      // submit handler; otherwise every column child must be a panel itself.
+      const flat = [...(column?.querySelectorAll(':scope > .settings-form > *') ?? [])];
+      const children = flat.length ? flat : [...(column?.children ?? [])];
+      const ok = Boolean(column) && children.length > 0 && children.every((c) => c.classList.contains('panel') || c.tagName === 'TEMPLATE' || c.classList.contains('notice') || c.classList.contains('loading-line'));
       return { tag: el.tagName, cls: el.className, reason: 'settings column not panelised', ok };
     }
     if (el.classList.contains('notice')) return null;

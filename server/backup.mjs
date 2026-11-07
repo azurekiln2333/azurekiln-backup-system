@@ -9,12 +9,13 @@ import { isExcluded } from './exclusions.mjs';
 import { aborted, probe, redact, runProcess } from './process.mjs';
 import { newApiSecrets, prepareNewApi } from './newapi.mjs';
 import { normalizeRemotePath } from './rclone.mjs';
+import { createNotificationBatcher } from './notify-batch.mjs';
 
 const finished = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
 const ownedId = /^[a-zA-Z0-9_-]+$/;
 const now = () => new Date().toISOString();
 
-export async function sendNotificationEmail(settings, { subject, text, to }) {
+export async function sendNotificationEmail(settings, { subject, text, html, to }) {
   const smtp = settings.smtp;
   if (!smtp.enabled) return { disabled: true };
   if (!smtp.host || !smtp.from || !(to || smtp.to.length)) throw new Error('SMTP host, sender and recipient are required');
@@ -25,7 +26,7 @@ export async function sendNotificationEmail(settings, { subject, text, to }) {
     connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
   });
   try {
-    await transport.sendMail({ from: smtp.from, to: to || smtp.to.join(', '), subject, text });
+    await transport.sendMail({ from: smtp.from, to: to || smtp.to.join(', '), subject, text, html });
     return { sent: true };
   } finally { transport.close(); }
 }
@@ -106,6 +107,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
   let downloadAdmission = Promise.resolve();
   let draining = false, stopped = false, activePromise = Promise.resolve();
   let housekeeping;
+  const notifications = createNotificationBatcher({ store, sendEmail: sendNotificationEmail });
 
   const listAllRuns = () => {
     const result = [];
@@ -397,22 +399,19 @@ export function createBackupService({ store, config, rclone, runTool = runProces
   }
 
   async function notify(job, runId, kind, secrets) {
+    if (kind !== 'start') return notifications.complete(runId);
     const settings = store.getSettings({ includeSecrets: true });
-    if (!job.notification[kind] || !settings.smtp.enabled) {
-      if (kind !== 'start') update(runId, { notificationStatus: 'disabled' });
-      return;
-    }
+    if (!job.notification.start || !settings.smtp.enabled) return;
     const run = store.getRun(runId);
     try {
       await sendNotificationEmail(settings, {
         subject: redact(`[Backup ${kind}] ${job.name}`, secrets),
         text: redact([`Task: ${job.name}`, `Run: ${runId}`, `Source: ${job.type === 'vaultwarden' ? job.vaultwarden.dataDir || job.sourcePath : job.sourcePath}`, `Status: ${run.status}`, `Started: ${run.startedAt}`, `Finished: ${run.finishedAt ?? '-'}`, `Archive: ${run.archiveName ?? '-'}`, `Bytes: ${run.archiveBytes ?? '-'}`, ...run.targets.map((target) => `Destination: ${target.remote}:${target.path} (${target.status})`), `Error: ${run.error ?? '-'}`, ...(run.warnings ?? []).map((warning) => `Warning: ${warning}`)].join('\n'), secrets),
       });
-      if (kind !== 'start') update(runId, { notificationStatus: 'sent' });
     } catch (error) {
       const warning = redact(`Email notification failed: ${error.message}`, secrets);
       log(runId, warning, 'warn', secrets);
-      update(runId, { warnings: [...(store.getRun(runId).warnings ?? []), warning], ...(kind !== 'start' ? { notificationStatus: 'failed' } : {}) });
+      update(runId, { warnings: [...(store.getRun(runId).warnings ?? []), warning] });
     }
   }
 
@@ -743,7 +742,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
         await execute(item.runId, item.jobId);
         if (queuedJobs.get(item.jobId) === item.runId) queuedJobs.delete(item.jobId);
       }
-    } finally { draining = false; }
+    } finally { draining = false; await notifications.flush(); }
   }
 
   const interruptedRuns = listAllRuns().filter((entry) => !finished.has(entry.status));
@@ -774,6 +773,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       }
     }
     await sweep().catch(() => {});
+    await notifications.recover();
   })();
   activePromise = recoveryReady;
   housekeeping = setInterval(() => { if (!draining) sweep().catch(() => {}); }, 60000);
@@ -845,6 +845,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
     async shutdown() {
       stopped = true;
       clearInterval(housekeeping);
+      const notificationShutdown = notifications.shutdown();
       for (const controller of controllers.values()) controller.abort();
       for (const controller of downloadOperations.keys()) controller.abort();
       for (const item of queue) {
@@ -852,6 +853,7 @@ export function createBackupService({ store, config, rclone, runTool = runProces
       }
       queue.length = 0;
       await activePromise;
+      await notificationShutdown;
       await Promise.allSettled([...downloadOperations.values()]);
       for (const directory of downloadPaths.keys()) {
         await rm(directory, { recursive: true, force: true });

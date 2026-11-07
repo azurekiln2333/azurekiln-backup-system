@@ -153,6 +153,43 @@ The overview page replaces its former task preview with a site list (up to six s
 
 Site records live in `state.sqlite` with the rest of the application state, so they are exported with the application-configuration backup and restored with it, including repositories, notes, and address order. Importing an older archive that has no site tables yields an empty site list and leaves existing tasks untouched.
 
+## Server nodes
+
+The Server Nodes page pushes task definitions from this controller to other instances of the same application running on other servers. A node has a name, a base URL, an API token, an enabled flag, path rules, per-job path overrides, and the result of its last synchronization.
+
+Node tokens are stored encrypted; API responses only report whether a token is set, and plaintext never reaches logs or error messages. A token is issued on the API Tokens page and belongs to the remote instance, not to your controller login. The token must carry the sync scope, otherwise synchronization reports an insufficient-scope error.
+
+A base URL must be an `http(s)://` address without credentials, query, or fragment; a trailing slash is normalized. Synchronization requests never follow redirects, so a 3xx response fails the sync and the base URL must be the final address. That address is deliberately **not** filtered for loopback, link-local, or private ranges, because internal nodes are the normal case; the boundary is the address you type, so do not point a node at an untrusted public host.
+
+### Path mapping
+
+A node is a different machine, so its directory layout usually differs from the controller's. Before a definition is pushed, every local absolute path it references is translated by path rules. A rule maps a source prefix to a target prefix, for example `/srv` on the controller to `/data/srv` on the node; both ends must be absolute. Matching always works on whole path segments, so `/srv-old` never matches `/srv`.
+
+- **Longest prefix wins.** With both `/srv` and `/srv/vaultwarden` defined, `/srv/vaultwarden/db` uses the more specific rule. Rule order in the list never changes the result.
+- **The source prefix decides the matching style.** A Windows-style source (a drive letter or backslashes, such as `C:\Data`) matches **case-insensitively**; a POSIX source such as `/srv/Data` matches **case-sensitively**, matching the real filesystem semantics of the two machines. The target keeps its own separator style, so a Linux path can map to `D:\apps\...` and the reverse.
+- **Repeated, mixed, or trailing separators never defeat a match.** `/srv//data/x`, `/srv/data\x`, and `/srv/data/x/` all match `/srv/data`.
+- **A per-job override wins.** An override path applies directly and also covers every dependent file under it (configuration, RSA keys, attachments); paths without an override fall back to the job's override rules and then to the node's rules.
+- **An unmatched absolute path is reported as needing a mapping and that job is skipped**, so the node never receives a path it cannot resolve. Relative paths already mean the same thing on the node and are not treated as needing a mapping. A drive-relative path such as `C:data` depends on that drive's current directory and is never mapped.
+
+Only task definitions are synchronized: source paths, destinations, schedule, and retention. Run history, archives, and secret settings (archive passwords, SMTP passwords, rclone credentials, login password, OIDC keys) never leave the controller. A destination path that is a local absolute path goes through the same mapping and is likewise reported when it cannot be mapped.
+
+Synchronization is an idempotent upsert keyed by a stable `syncKey` (the controller's task ID), so syncing twice updates the same remote task instead of creating duplicates. Results are returned per task — synced, needs mapping, or failed — with a reason. An unreachable node or a rejected token fails the whole sync rather than writing partially.
+
+Disabling a node stops new changes from being pushed; tasks and schedules already on the node stay as they are, and you pause or delete them on that node. Deleting a node removes only the controller-side record and credential; it never deletes tasks or archives on the node.
+
+## Notification aggregation and templates
+
+By default each task sends one email when it finishes. With aggregation enabled, tasks that finish in the same period produce a single summary message listing each task's name, type, status, duration, size, and error summary, instead of a burst of messages during a batch backup.
+
+A batch is flushed when nothing is queued or running and the aggregation window (`aggregateWindowSec`, default 120 seconds, range 0–86400) has passed since the last completion. Setting the window to 0 disables aggregation and restores one email per task. A maximum wait (30 minutes by default) prevents a steady stream of tasks from holding the summary back indefinitely. Pending batches live in `state.sqlite`, so a restart does not lose them and already-due summaries are sent during startup.
+
+Summary and single-task templates each customize the subject and body, up to 8192 characters. Available placeholders:
+
+- Summary: `total`, `successCount`, `warningCount`, `failedCount`, `startedAt`, `finishedAt`, `hostName`, plus a repeatable `items` section whose entries carry `jobName`, `type`, `status`, `durationSec`, `archiveBytes`, `error`, and `nodeName`.
+- Single task: `jobName`, `type`, `status`, `durationSec`, `archiveBytes`, `archiveName`, and `error`.
+
+An unset template uses the built-in default, so older stored settings and a fresh install render identically and need no migration. Template output is escaped, so task names and error text are never executed as HTML. Templates only change message content; the per-task start, success, and failure toggles still decide which tasks notify at all.
+
 ## Authentication and notifications
 
 For AzureKiln OAuth2, register a confidential client with callback URL `BACKUP_PUBLIC_URL/api/auth/oidc/callback`. Configure the issuer, client ID, client secret, and exact administrator `sub`. The authorization-code flow uses PKCE, state, nonce, and ID Token verification and maps the approved identity to the existing administrator.

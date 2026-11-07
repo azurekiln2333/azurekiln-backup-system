@@ -390,6 +390,37 @@ a.site-repo:hover, a.site-repo:focus-visible { color: var(--primary); text-decor
 .field-hint { color: var(--muted); font-size: 10px; font-weight: 400; }
 /* The overview preview reuses the same row; only the read-only action column disappears. */
 .overview-site-list .site-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* Server nodes: same compact row rhythm as sites, but the action cluster is text
+   buttons (test/sync) plus icon buttons, so it needs its own tracks. */
+.node-list { display: flex; flex-direction: column; min-width: 0; }
+.node-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 4px 12px; min-width: 0; padding: 8px 16px; border-top: 1px solid var(--border); }
+.node-row:first-child { border-top: 0; }
+.node-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.node-identity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.node-name { flex: 0 1 auto; min-width: 3ch; font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node-base { flex: 0 1 auto; min-width: 6ch; max-width: 100%; color: var(--primary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.node-warn { color: var(--amber); }
+.node-count-warn { color: var(--amber); font-size: 12px; }
+.node-count-error { color: var(--red); font-size: 12px; }
+.node-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex-shrink: 0; gap: 4px; }
+/* Per-task push outcome: one line each, the reason wraps instead of truncating. */
+.node-sync-results { grid-column: 1 / -1; display: flex; flex-direction: column; min-width: 0; margin-top: 2px; border-top: 1px solid var(--border); }
+.node-sync-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.node-sync-row:last-child { border-bottom: 0; }
+.node-sync-name { min-width: 3ch; max-width: 40ch; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node-sync-detail { flex: 1 1 12ch; min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.node-rule-row input { flex: 1 1 0; min-width: 0; }
+.node-rule-arrow { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.node-job-search { max-width: none; }
+.node-override-list { display: flex; flex-direction: column; gap: 10px; }
+.node-override { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.node-override-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.node-override-head strong { min-width: 0; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .node-row { grid-template-columns: minmax(0, 1fr); }
+  .node-actions { justify-content: flex-start; }
+}
 .field-error { color: var(--red); font-size: 11px; font-weight: 400; }
 .batch-folders { max-height: 230px; overflow: auto; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .batch-folders .check-row { padding: 10px 4px; border-bottom: 1px solid var(--border); }
@@ -477,7 +508,28 @@ input.switch:checked:after { transform: translateX(13px); }
 .settings-nav { display: flex; flex-direction: column; gap: 5px; border-right: 1px solid var(--border); padding-right: 16px; }
 .settings-nav button { display: flex; align-items: center; gap: 11px; background: transparent; border: 0; border-radius: var(--radius-md); padding: 12px; font-size: 12px; color: var(--muted); text-align: left; }
 .settings-nav button.active { background: var(--blue-soft); color: var(--primary); font-weight: 600; }
-.settings-form { min-height: 380px; }
+.settings-column { min-width: 0; display: grid; gap: 16px; align-content: start; }
+/* Notification template editor (设置 → 通知模板). Mono text stays inside its own
+   scroll container so a long template line never widens the document. */
+.template-body { min-height: 190px; line-height: 1.6; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+.template-body:placeholder-shown { white-space: pre-wrap; }
+.template-variables { margin-top: 16px; }
+.template-variable-list { margin: 0; padding: 4px 16px 14px; display: grid; gap: 8px; }
+.template-variable-list > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.template-variable-list dt { color: var(--primary); font-size: 11px; overflow-wrap: anywhere; }
+.template-variable-list dd { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.template-variable-group { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.template-variable-group dd { color: var(--text); }
+.template-variable-item dt { padding-left: 14px; }
+.template-variable-item dd { padding-left: 14px; }
+.template-variables-empty { margin: 0; padding: 4px 16px 14px; color: var(--muted); font-size: 11px; }
+.template-preview { margin-top: 16px; }
+.template-preview-error { margin-top: 16px; }
+.template-preview-body { padding: 4px 16px 16px; }
+.template-preview-subject { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 8px 0 12px; font-size: 12px; }
+.template-preview-subject span { color: var(--muted); font-size: 11px; }
+.template-preview-subject strong { font-weight: 600; overflow-wrap: anywhere; }
+.template-preview-text { margin: 0; padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-md); font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
 .form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 16px; }
 .property-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 27px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; }
 .local-storage-section { margin-top: 31px; padding-top: 25px; border-top: 1px solid var(--border); }
@@ -659,6 +711,7 @@ body.modal-open .toast-message { display: none; }
   .settings-nav button svg { width: 16px; height: 16px; }
   .form-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .form-actions { flex-wrap: wrap; }
+  .template-variable-list > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   .property-grid { gap: 21px 18px; }
   .remote-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .remote-item { padding: 15px; }

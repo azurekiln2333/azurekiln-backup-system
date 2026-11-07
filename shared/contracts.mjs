@@ -280,7 +280,26 @@ export const batchJobSchema = z.object({
   template: z.record(z.unknown()),
 });
 
+export const TEMPLATE_MAX_LENGTH = 8192;
+
+// Operator-editable notification template. Both fields are optional strings;
+// `''` (the default) means "use the built-in template", so an unconfigured
+// install renders exactly the previous format. Rejects control characters that
+// could break out of a mail header.
+export const notificationTemplateSchema = z.object({
+  subject: z.string().max(TEMPLATE_MAX_LENGTH).refine((value) => !/[\r\n\0]/.test(value), '主题不能包含换行或控制字符。').default(''),
+  body: z.string().max(TEMPLATE_MAX_LENGTH).default(''),
+}).default({});
+
 export const settingsSchema = z.object({
+  notification: z.object({
+    aggregateWindowSec: z.number().int().min(0).max(86400).default(120),
+    // Notification templates (see server/notify-template.mjs). Lives under
+    // `notification` per .trellis/tasks/11-02-notify-template/prd.md. Both fields
+    // default to `''`, which means "use the built-in template", so old stored
+    // settings and `{}` render identically to an unconfigured install.
+    template: notificationTemplateSchema.default({}),
+  }).default({}),
   smtp: z.object({
     enabled: z.boolean().default(false),
     host: z.string().trim().default(''),

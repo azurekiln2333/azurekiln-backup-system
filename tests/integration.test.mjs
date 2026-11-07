@@ -23,6 +23,7 @@ async function fixture(callback) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'azurekiln-integration-'));
   const config = loadConfig({ DATA_DIR: path.join(root, 'state'), SOURCE_ROOTS: path.join(root, 'sources'), RCLONE_BINARY: rcloneBinary, SEVEN_ZIP_BINARY: sevenZipBinary }, root);
   const store = createStore(config);
+  store.saveSettings({ notification: { aggregateWindowSec: 0 } });
   const remoteA = path.join(root, 'remote-a');
   const remoteB = path.join(root, 'remote-b');
   await mkdir(remoteA);
@@ -44,7 +45,7 @@ async function finish(store, run, timeout = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const result = store.getRun(run.id);
-    if (!['queued', 'running'].includes(result.status) && result.finishedAt && result.notificationStatus !== 'pending') return result;
+    if (!['queued', 'running'].includes(result.status) && result.finishedAt && !['pending', 'batched'].includes(result.notificationStatus)) return result;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error('Integration backup did not finish within its timeout');

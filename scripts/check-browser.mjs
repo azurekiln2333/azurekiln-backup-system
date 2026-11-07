@@ -381,6 +381,48 @@ try {
   assert.equal(messages.length, 1);
   await screenshot('desktop-mail');
 
+  // Notification template editor: help list, customization state, live preview
+  // and verbatim storage. The `{{variable}}` engine and HTML escaping are server
+  // concerns (server/notify-template.mjs), so these assertions cover the editor
+  // contract and read the persisted values back from the real API.
+  await page.getByRole('button', { name: '通知模板', exact: true }).click();
+  const templateSection = page.locator('.settings-form section').filter({ has: page.getByRole('heading', { name: '通知模板', exact: true }) });
+  await templateSection.waitFor();
+  assert.equal(await templateSection.locator('.panel-heading .toggle-row').first().innerText(), '内置默认模板', 'default template state is shown before customization');
+
+  await templateSection.getByLabel('邮件主题').fill('自定义主题 {{total}} 个任务');
+  await templateSection.getByLabel('邮件正文（纯文本）').fill('{{#items}}任务 {{jobName}} {{status}}{{/items}}');
+  await templateSection.getByRole('button', { name: '预览效果' }).click();
+  await templateSection.locator('.template-preview').waitFor();
+  assert.equal(await templateSection.locator('.template-preview-error').count(), 0, 'no preview error for a valid template');
+
+  // The variable list is populated by the preview response (server-owned names).
+  await templateSection.locator('.template-variable-list').waitFor();
+  const variableItems = await templateSection.locator('.template-variable-list dt').allInnerTexts();
+  assert.ok(variableItems.some((text) => text.includes('items')), 'the items loop is documented in the variable list');
+  assert.ok(variableItems.some((text) => text.includes('failedCount')), 'scalar variables are documented');
+  assert.ok(await templateSection.locator('.template-preview-text').textContent(), 'the preview renders non-empty text');
+  // 恢复默认 is enabled only when the draft differs from the persisted template.
+  assert.ok(await templateSection.getByRole('button', { name: '恢复默认' }).isEnabled(), 'restore-default is available for a customized draft');
+  await screenshot('desktop-notification-template');
+
+  await templateSection.getByRole('button', { name: '保存模板' }).click();
+  await page.getByRole('status').filter({ hasText: '通知模板已保存' }).waitFor();
+  const savedTemplate = (await api('/settings')).notification.template;
+  assert.equal(savedTemplate.subject, '自定义主题 {{total}} 个任务', 'the subject round-trips verbatim');
+  assert.ok(savedTemplate.body.includes('{{jobName}}'), 'the body is stored literally, not pre-rendered client-side');
+  assert.equal(await templateSection.locator('.panel-heading .toggle-row').first().innerText(), '自定义模板', 'customized state is shown after saving');
+  // After a save the draft equals the persisted template, so there is nothing to restore yet.
+  assert.ok(!(await templateSection.getByRole('button', { name: '恢复默认' }).isEnabled()), 'restore-default is unavailable while the draft matches the saved template');
+
+  await templateSection.getByLabel('邮件主题').fill('临时改到一半');
+  assert.ok(await templateSection.getByRole('button', { name: '恢复默认' }).isEnabled(), 'restore-default is available again once the draft drifts');
+  await templateSection.getByRole('button', { name: '恢复默认' }).click();
+  await page.getByRole('status').filter({ hasText: '已恢复默认通知模板' }).waitFor();
+  const resetTemplate = (await api('/settings')).notification.template;
+  assert.deepEqual({ subject: resetTemplate.subject, body: resetTemplate.body }, { subject: '', body: '' }, 'restoring the default stores empty strings');
+  assert.equal(await templateSection.getByLabel('邮件主题').inputValue(), '', 'the editor clears back to the default template');
+  assert.equal(await templateSection.locator('.panel-heading .toggle-row').first().innerText(), '内置默认模板', 'the section reports the built-in default again');
   await navigate('jobs');
   await page.getByRole('button', { name: '新建任务', exact: true }).first().click();
   await dialog().getByLabel('任务名称', { exact: true }).fill('Directory A');
