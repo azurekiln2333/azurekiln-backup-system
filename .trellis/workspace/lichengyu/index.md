@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-11-07
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~300 | Active |
+| `journal-1.md` | ~322 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-11-07 | Mobile site layout fixed and cloud verification passed | `e68ed8c` | `feat/nodes-and-notify` |
 | 9 | 2026-11-07 | Site deployment notes merged; CI evidence recorded | `0245c22`, `c02cebb`, `9132496` | `feat/nodes-and-notify` |
 | 8 | 2026-11-07 | Node backend and docker-compose submission | `02ac84c`, `8a8747d` | `feat/nodes-and-notify` |
 | 7 | 2026-10-30 | 工作区清理：忽略 AI 工具目录并收尾仓库主机回退任务 | `b71964a`, `70f2e26`, `8973a14`, `ba374ef` | `fix/repository-host-fallback` |

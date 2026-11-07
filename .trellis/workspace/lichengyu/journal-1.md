@@ -298,3 +298,25 @@ Added site cloud-image lists and Watchtower deployment notes with schema, storag
 ### Status
 
 [OK] **Completed**
+
+
+## Session 10: Mobile site layout fixed and cloud verification passed
+<!-- trellis-session: v=2 fp=e40c0e5b4648fc07 -->
+
+**Date**: 2026-11-07
+**Task**: Mobile site layout fixed and cloud verification passed
+**Branch**: `feat/nodes-and-notify`
+
+### Summary
+
+Repaired 360px site row density by giving metadata full width and placing unchanged actions beside linked tasks. Preserved the 156px guard and all labels; added wider-metric old-track negative control, long-label checks and failure geometry capture. Exact-source local full layout/browser/type-check/build and 150 tests passed (146 pass, four Windows skips). Main GitHub run 42386672446 SUCCESS: all 150 Linux tests zero skips, full browser, six site cases and 56 layout renders/64 screenshots. Merged repair to main; archived only this task and preserved all parallel nodes/notification WIP. No version tag/image publication/deployment.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e68ed8c` | fix(sites): keep mobile metadata clear of the action column |
+
+### Status
+
+[OK] **Completed**
