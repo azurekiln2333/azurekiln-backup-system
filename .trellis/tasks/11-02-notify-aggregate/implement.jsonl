@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Backup lifecycle, persistent notification states, redaction, cleanup independence, and backend validation"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Search existing notification/settings helpers before introducing the batch coordinator"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Shared settings compatibility and persisted run/service delivery contracts"}
+{"file":".trellis/tasks/11-02-nodes-notify/prd.md","reason":"Shared branch, file ownership, no commits, test and done.md requirements"}
+{"file":".trellis/tasks/11-02-notify-template/prd.md","reason":"Read-only renderer signature and notification context contract owned by another task"}
