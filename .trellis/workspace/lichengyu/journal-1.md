@@ -274,3 +274,27 @@ Submitted scoped node backend and requested docker-compose filenames; preserved 
 ### Next Steps
 
 - Coordinate API-token issuance, path-mapper fixes and remaining UI/notification lanes; shared task remains active.
+
+
+## Session 9: Site deployment notes merged; CI evidence recorded
+<!-- trellis-session: v=2 fp=a6d1f90e476d7051 -->
+
+**Date**: 2026-11-07
+**Task**: Site deployment notes merged; CI evidence recorded
+**Branch**: `feat/nodes-and-notify`
+
+### Summary
+
+Added site cloud-image lists and Watchtower deployment notes with schema, storage, restore and browser coverage; merged all submitted branch commits to remote main. Repaired confirmed CI rclone provisioning and browser preselection waits. GitHub run 42327196037 passed type-check/build, all 150 Linux tests, full browser and six site cases; existing 360px site-list layout still fails at 169px versus 156px. Failure artifacts uploaded; no image release or deployment. Archived only site-deployment-notes and preserved parallel nodes/notification WIP.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0245c22` | feat(sites): add cloud image and Watchtower deployment notes |
+| `c02cebb` | fix(ci): wait for source picker preselection before asserting |
+| `9132496` | ci: retain browser evidence and verify site notes before layout |
+
+### Status
+
+[OK] **Completed**
