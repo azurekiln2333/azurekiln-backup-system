@@ -1,8 +1,16 @@
+# Each container keeps at most 3 rotated 10 MB json-file logs.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   backup:
     image: "${BACKUP_IMAGE:-ghcr.io/azurekiln2333/azurekiln-backup-system:latest}"
     user: "0:0"
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     environment:
@@ -33,6 +41,7 @@ services:
   watchtower:
     image: nickfedor/watchtower:1.23.2
     restart: unless-stopped
+    logging: *default-logging
     environment:
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_SCOPE: "${COMPOSE_PROJECT_NAME:-azurekiln-backup-system}"
