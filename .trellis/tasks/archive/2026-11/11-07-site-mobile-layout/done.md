@@ -1,6 +1,6 @@
 # Mobile site layout repair
 
-Implemented and locally verified on November 7, 2026. The authorized submission triggers the existing GitHub cloud verification; its observed result is appended below before final completion.
+Implemented, submitted, merged to main and verified by the real GitHub cloud run on November 7, 2026. The complete result is recorded below.
 
 ## Cause and repair
 
@@ -35,4 +35,15 @@ Representative desktop and mobile, light and dark screenshots were visually insp
 
 ## Remote verification
 
-Pending the authorized work-commit push. Do not interpret this initial entry as a green cloud run; record the real run ID/SHA/conclusion before archiving.
+Work commit `e68ed8cdbd06b94669ca77c8ff37a43211adec3e` (`fix(sites): keep mobile metadata clear of the action column`) was normally pushed atomically to `feat/nodes-and-notify` and fast-forward merged to remote `main` on November 7, 2026.
+
+GitHub main run `42386672446`, attempt 1, verified that exact SHA and completed with overall **success**:
+
+- Type-check and production build passed; rclone 1.75.1 installation passed.
+- All **150 Linux tests passed, zero failed or skipped**.
+- Full browser passed with **65 screenshots and four real encrypted backups**.
+- Site deployment notes passed all **six viewport/theme cases**.
+- Full layout passed: **7 pages × 4 widths × 2 themes, 56 asserted renders, 64 screenshots**, including the wider-label regression, old-track negative control and long-label stress checks. The previously failing `light/360/sites` gate now passes with the original 156px guard.
+- Image publication, release and latest-promotion jobs were skipped as expected for branch/main pushes; no image or production deployment was published.
+
+Sanitized actual run-log evidence is saved locally in ignored `.artifacts/github-42386672446-evidence.jsonl`. The log archive was retrieved using the existing Git credential only in memory and following its signed redirect without forwarding authorization; no secret or signed URL was persisted. Normalized comparisons independently confirmed parallel edits in both shared source files were preserved. Documentation-only archive/journal commits follow the verified repair without further product-code changes.

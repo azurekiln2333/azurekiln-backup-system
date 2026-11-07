@@ -23,11 +23,11 @@ Restore the cloud layout gate for compact site rows on small phones while keepin
 ## Acceptance Criteria
 
 - [x] The prior 169px failure is reproduced or explained by measured DOM/font/layout evidence before repair.
-- [x] Standard site rows meet the existing 104px desktop / 156px phone maxima and complete-row requirements without hiding useful content (local exact submission; actual cloud result remains below).
+- [x] Standard site rows meet the existing 104px desktop / 156px phone maxima and complete-row requirements without hiding useful content, locally and in real GitHub Linux run `42386672446`.
 - [x] Both inventory and overview retain accessible names, links, labels and actions, with no horizontal document/control overflow across the existing viewport/theme matrix.
 - [x] Long repository/task labels remain readable and can grow naturally; fault injection still catches hidden information and oversized row padding.
-- [ ] Type-check, build, full browser/layout and targeted cause regression checks pass; actual cloud results are documented honestly.
-- [ ] Only this task's changes are submitted, parallel WIP is preserved, and task `done.md` records validation.
+- [x] Type-check, build, full browser/layout and targeted cause regression checks pass; actual cloud results are documented honestly.
+- [x] Only this task's changes are submitted, parallel WIP is preserved, and task `done.md` records validation.
 
 ## Out of scope
 

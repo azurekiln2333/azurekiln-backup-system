@@ -8,8 +8,8 @@
 - [x] Validate exact submitted source, sequentially: type-check/build, radius audit, full layout including font/long-content/failure controls, full browser, relevant tests. Inspect desktop/mobile/light/dark evidence.
 - [x] Independent Trellis check across all task-owned changes; repair verified findings and repeat only affected checks.
 - [x] Update frontend spec with the measured width sensitivity and required diagnostic/regression contract; write done.md with exact checks and limitations.
-- [ ] Commit only task-owned hunks, push/fast-forward merge under prior authorization, and inspect actual GitHub result without weakening gates.
-- [ ] Archive only this completed task and record the journal; preserve other tasks and WIP.
+- [x] Commit only task-owned hunks, push/fast-forward merge under prior authorization, and inspect actual GitHub result without weakening gates (`e68ed8c`, run `42386672446`: success).
+- Finish-work: archive only this completed task and record the journal; preserve other tasks and WIP. The task status, archive path and subsequent journal commit record completion of this bookkeeping step.
 
 Expected code paths: phone `.site-*` declarations in `web/src/style.css`; production site guards, evidence handling and new targeted site regressions in `scripts/check-layout.mjs`. No shared schema, server, SiteRow DOM or deployment changes are planned.
 
