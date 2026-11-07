@@ -423,6 +423,9 @@ try {
   assert.deepEqual({ subject: resetTemplate.subject, body: resetTemplate.body }, { subject: '', body: '' }, 'restoring the default stores empty strings');
   assert.equal(await templateSection.getByLabel('邮件主题').inputValue(), '', 'the editor clears back to the default template');
   assert.equal(await templateSection.locator('.panel-heading .toggle-row').first().innerText(), '内置默认模板', 'the section reports the built-in default again');
+  // The default 120s aggregation window outlasts poll(); send run notifications immediately.
+  const windowResponse = await context.request.patch(`${config.publicUrl}/api/settings`, { headers: { 'content-type': 'application/json', 'x-csrf-token': (await api('/auth/status')).csrfToken }, data: JSON.stringify({ notification: { aggregateWindowSec: 0 } }) });
+  assert.ok(windowResponse.ok(), `PATCH /settings: ${windowResponse.status()} ${await windowResponse.text()}`);
   await navigate('jobs');
   await page.getByRole('button', { name: '新建任务', exact: true }).first().click();
   await dialog().getByLabel('任务名称', { exact: true }).fill('Directory A');
