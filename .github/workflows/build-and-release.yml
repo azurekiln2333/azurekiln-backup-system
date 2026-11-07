@@ -266,7 +266,8 @@ jobs:
           # SOURCE_DATE_EPOCH keeps the archive reproducible for an unchanged tag.
           out="$(node scripts/prepare-release.mjs --bundle --tag "$RELEASE_TAG" --out-dir dist --source-date-epoch "$SOURCE_DATE_EPOCH")"
           echo "$out"
-          archive="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).archive)' "$out")"
+          # Line 1 is the JSON contract; line 2 is the plain archive path for ci-verify.sh.
+          archive="$(node -e 'process.stdout.write(JSON.parse(process.argv[1].split("\n")[0]).archive)' "$out")"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           # Verify the sidecar against the actual bytes before publishing anything.
           (cd dist && sha256sum --check "$archive.sha256")
