@@ -671,12 +671,12 @@ body.modal-open .toast-message { display: none; }
   .dialog-tabs { gap: 16px; padding: 0 14px; }
   .dialog-tabs button { font-size: 11px; }
   .editor-body { min-height: 280px; }
-  /* Site rows keep every label visible: the row body wraps, only the task chips
-     take the full width so a long shared name is never truncated. */
+  /* Metadata gets the full row width: reserving the action track beside both
+     repositories adds a line with wider platform fonts. Tasks wrap beside actions. */
   .site-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; padding: 6px 12px; }
-  .site-row-main { grid-column: 1; grid-row: 1; gap: 3px; }
-  .site-actions { grid-column: 2; grid-row: 1; }
-  .site-jobs { grid-column: 1 / -1; grid-row: 2; gap: 3px 5px; }
+  .site-row-main { grid-column: 1 / -1; grid-row: 1; gap: 3px; }
+  .site-actions { grid-column: 2; grid-row: 2; }
+  .site-jobs { grid-column: 1; grid-row: 2; gap: 3px 5px; }
   /* Tighter chips keep the real name, type and status on one line on a phone. */
   .site-job { gap: 5px; padding: 2px 5px; }
   /* The name wraps here too: a phone must not truncate a task name. */

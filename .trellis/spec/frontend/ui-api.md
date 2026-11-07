@@ -185,6 +185,8 @@ Apply to `#sites`, site editing/filtering, reverse job associations, and indepen
 
 The layout matrix has **seven pages × four widths × two themes = 56 asserted renders**, plus existing supplements and density evidence. Populate the eight standard sites and shared tasks through authenticated APIs; assert site/hostname/repository/job visibility and complete-row density. Reuse production guards for name/hostname/repository/job visibility and oversized-padding fault injections. Retain shell/containment/scroll/radius checks and inspect desktop/mobile/light/dark screenshots.
 
+Phone site metadata spans the full row; edit/delete controls share row 2 beside task chips. Reserving their column beside all metadata leaves only 222px at 360px: two repositories fit Windows Cascadia but can wrap under wider monospace metrics, adding 20px. Keep natural wrapping and action sizes. Exercise wider label metrics with the same visibility/density guards and long-label containment checks; do not loosen thresholds or install a CI-only font. On failure, save the current screenshot and DOM/geometry evidence before browser cleanup so the failing viewport survives in uploaded artifacts.
+
 ### 7. Wrong vs Correct
 
 Wrong: `Promise.all([overview,jobs,runs]).then(loadSites)`, treating `jobs=[]` after a failed fetch as deletion, replacing a mounted editor's draft whenever sites refresh, or using an absent repository provider as an invalid-link signal.

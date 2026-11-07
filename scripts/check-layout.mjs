@@ -159,6 +159,11 @@ const probe = (page) => page.evaluate(() => {
       const rowRect = row.getBoundingClientRect();
       const nameRect = name?.getBoundingClientRect();
       const hostRect = host?.getBoundingClientRect();
+      const geometry = (el) => {
+        const r = el.getBoundingClientRect();
+        const c = getComputedStyle(el);
+        return { left: r.left, top: r.top, width: r.width, height: r.height, font: c.font, letterSpacing: c.letterSpacing };
+      };
       return {
         name: name?.textContent?.trim() ?? null,
         nameVisible: visible(name),
@@ -179,6 +184,13 @@ const probe = (page) => page.evaluate(() => {
         top: Math.round(rowRect.top),
         height: Math.round(rowRect.height),
         complete: rowRect.top >= 48 && rowRect.bottom <= window.innerHeight,
+        layout: {
+          tracks: getComputedStyle(row).gridTemplateColumns,
+          metadata: geometry(row.querySelector('.site-row-main')),
+          actions: row.querySelector('.site-actions') ? geometry(row.querySelector('.site-actions')) : null,
+          repositories: repos.map((el) => ({ ...geometry(el.closest('.site-repo')), label: geometry(el), href: el.closest('a')?.getAttribute('href') })),
+          jobs: jobs.map(geometry),
+        },
       };
     }),
     navGroupLabels: [...document.querySelectorAll('.nav-label')].map((n) => n.textContent.trim()),
@@ -269,6 +281,7 @@ const statsProbe = (page) => page.evaluate(() => [...document.querySelectorAll('
 
 let runtime, server, browser, context, page;
 let checks = 0;
+let currentCase = 'setup';
 const overviewRowSummary = { rows: 0, named: 0, combos: 0, texts: new Set() };
 const densityMetrics = { viewports: {} };
 try {
@@ -355,6 +368,7 @@ try {
         await page.waitForTimeout(350);
       }
       for (const target of pages) {
+        currentCase = `${theme}/${vp.name}/${target.id}`;
         // Set the theme once per viewport via the toggle, then navigate by hash.
         await page.goto(`http://127.0.0.1:${port}/#${target.id}`);
         await page.locator('.main-content h1').waitFor();
@@ -390,16 +404,16 @@ try {
         if (m.brandText && !m.brandText.hidden) assert.equal(m.brandText.ellipsis, 'ellipsis', `${where}: brand ellipsizes`);
 
         if (target.id === 'sites') {
-          assertSiteVisibility(m, where);
-          assertStandardDensity(m, where, vp);
           densityMetrics.viewports[`${theme}/${vp.name}`] = {
             theme,
             viewport: `${vp.width}x${vp.height}`,
             completeCount: m.siteRows.filter((row) => row.complete).length,
             maxRowHeight: m.siteRows.reduce((max, row) => Math.max(max, row.height), 0),
             firstRowTop: m.siteRows[0]?.top ?? null,
-            rows: m.siteRows.map((row) => ({ name: row.name, height: row.height, top: row.top, complete: row.complete })),
+            rows: m.siteRows.map((row) => ({ name: row.name, height: row.height, top: row.top, complete: row.complete, layout: row.layout })),
           };
+          assertSiteVisibility(m, where);
+          assertStandardDensity(m, where, vp);
         }
 
         if (target.id === 'overview') {
@@ -552,6 +566,64 @@ try {
   assert.doesNotThrow(() => assertSiteVisibility(restored, 'negative/restored'), 'the production guard passes again once every fault is removed');
   assert.doesNotThrow(() => assertStandardDensity(restored, 'negative/restored', { name: '1440' }), 'the density guard passes again once padding is restored');
 
+  // Exercise the measured font-width boundary without requiring a host font:
+  // a small label-spacing stimulus makes the two repos wider than the former
+  // 222px metadata track. The production guards and 156px maximum stay unchanged.
+  await page.setViewportSize({ width: 360, height: 900 });
+  for (const theme of ['light', 'dark']) {
+    for (const target of ['sites', 'overview']) {
+      currentCase = `${theme}/360/${target}/wide-repositories`;
+      await page.goto(`http://127.0.0.1:${port}/#${target}`);
+      await page.locator('.main-content .site-row').first().waitFor();
+      const toggle = page.getByRole('button', { name: theme === 'dark' ? '深色主题' : '浅色主题' });
+      if (await toggle.count()) await toggle.click();
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForTimeout(400);
+      await withTemporaryStyle('.site-repo-label { letter-spacing: 0.6px !important; }', async (wide) => {
+        assertSiteVisibility(wide, currentCase);
+        assertStandardDensity(wide, currentCase, { name: '360' });
+        assert.deepEqual(wide.controlOverflow, [], `${currentCase}: controls stay contained`);
+        assert.equal(wide.docScrollWidth, wide.innerWidth, `${currentCase}: no horizontal overflow`);
+        const row = wide.siteRows[0];
+        const [first, second] = row.layout.repositories;
+        assert.ok(first.width + second.width + 8 > 222, `${currentCase}: stimulus crosses the old 222px wrap boundary`);
+        assert.ok(Math.abs(first.top - second.top) <= 1, `${currentCase}: both complete repository links fit on one line`);
+        assert.notEqual(first.href, second.href, `${currentCase}: complete repository targets stay distinct`);
+        await page.screenshot({ path: path.join(screenshotDir, `${theme}-360-${target}-wide-repositories.png`) });
+        matrix.screenshots += 1;
+        if (target === 'sites') {
+          await withTemporaryStyle('.site-row-main { grid-column: 1 !important; } .site-actions { grid-row: 1 !important; } .site-jobs { grid-column: 1 / -1 !important; }', (old) => {
+            assert.throws(() => assertStandardDensity(old, `${currentCase}/old-tracks`, { name: '360' }), /standard site row height/, 'restoring the old tracks reproduces the wider-font density failure');
+          });
+        }
+
+        // Long labels must grow naturally even with the actions beside tasks.
+        // This is a temporary content stress test, like the visibility faults.
+        const originals = await page.locator('.main-content .site-row').first().evaluate((el) => {
+          return [...el.querySelectorAll('.site-repo-label, .site-job-name')].map((label) => {
+            const text = label.textContent;
+            label.textContent = `${text}-${'long-reference'.repeat(10)}`;
+            return text;
+          });
+        });
+        try {
+          const long = await probe(page);
+          assert.ok(long.siteRows[0].height > row.height, `${currentCase}: long content grows instead of being clipped`);
+          assert.deepEqual(long.controlOverflow, [], `${currentCase}: long task controls stay contained`);
+          assert.equal(long.docScrollWidth, long.innerWidth, `${currentCase}: long content does not widen the document`);
+          const clipped = await page.locator('.main-content .site-row').first().evaluate((el) => [...el.querySelectorAll('.site-repo-label, .site-job-name')]
+            .filter((label) => label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1)
+            .map((label) => label.className));
+          assert.deepEqual(clipped, [], `${currentCase}: full repository and task labels remain readable`);
+        } finally {
+          await page.locator('.main-content .site-row').first().evaluate((el, texts) => {
+            [...el.querySelectorAll('.site-repo-label, .site-job-name')].forEach((label, i) => { label.textContent = texts[i]; });
+          }, originals);
+        }
+      });
+    }
+  }
+
   // ---- R4: transparent, borderless stats with the agreed metrics ----
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`http://127.0.0.1:${port}/#overview`);
@@ -700,6 +772,15 @@ try {
   console.log(`Overview site rows: ${overviewRowSummary.combos}/${expectedCombos} combinations, ${overviewRowSummary.rows} row renders, ${overviewRowSummary.named} with a visible name (${[...overviewRowSummary.texts].join(', ')}).`);
   console.log(`Sites matrix: populated rows checked in ${viewports.length * 2} viewport/theme combinations, including the failing negative control.`);
   console.log(`Screenshots: ${screenshotDir}`);
+} catch (error) {
+  if (page && !page.isClosed()) {
+    const measured = await probe(page).catch((cause) => ({ captureError: String(cause) }));
+    await Promise.allSettled([
+      page.screenshot({ path: path.join(screenshotDir, 'failure.png'), fullPage: true }),
+      writeFile(path.join(screenshotDir, 'failure.json'), JSON.stringify({ currentCase, url: page.url(), error: String(error), measured, densityMetrics }, null, 2)),
+    ]);
+  }
+  throw error;
 } finally {
   if (browser) await browser.close();
   if (server) await new Promise((resolve) => server.close(resolve));
