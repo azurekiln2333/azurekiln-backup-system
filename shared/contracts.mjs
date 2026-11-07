@@ -111,6 +111,8 @@ export const siteDomainSchema = z.string().trim().min(1).max(SITE_DOMAIN_MAX_LEN
 export const SITE_REPOSITORY_LIMIT = 20;
 export const SITE_REPOSITORY_MAX_LENGTH = 2048;
 export const SITE_NOTES_MAX_LENGTH = 500;
+export const SITE_CLOUD_IMAGE_LIMIT = 20;
+export const SITE_CLOUD_IMAGE_MAX_LENGTH = 1024;
 // Exact-host icon lookup only; unrecognized hosts remain valid repository links.
 export const SITE_REPOSITORY_HOSTS = Object.freeze({
   'github.com': 'github',
@@ -170,6 +172,11 @@ export const siteRepositorySchema = z.string().trim().min(1).max(SITE_REPOSITORY
 // Optional plain-text remarks; internal newlines survive, ends are trimmed and '' is the empty value.
 export const siteNotesSchema = z.string().trim().max(SITE_NOTES_MAX_LENGTH).default('');
 
+// Deployment notes only: retain the exact image/tag/digest spelling without consulting a registry.
+export const siteCloudImageSchema = z.string().trim().min(1, '镜像引用不能为空。')
+  .max(SITE_CLOUD_IMAGE_MAX_LENGTH, `镜像引用最多 ${SITE_CLOUD_IMAGE_MAX_LENGTH} 个字符。`)
+  .refine((value) => !/[\s\p{Cc}]/u.test(value), '镜像引用不能包含空白或控制字符。');
+
 /** @param {string[]} items @returns {string[]} */
 const dedupeStrings = (items) => items.filter((item, index) => items.indexOf(item) === index);
 
@@ -179,6 +186,8 @@ export const siteSchema = z.object({
   tags: tagListSchema,
   repositoryUrls: z.array(siteRepositorySchema).max(SITE_REPOSITORY_LIMIT).default([]).transform(dedupeStrings),
   notes: siteNotesSchema,
+  cloudImages: z.array(siteCloudImageSchema).max(SITE_CLOUD_IMAGE_LIMIT, `最多 ${SITE_CLOUD_IMAGE_LIMIT} 个云端镜像。`).default([]).transform(dedupeStrings),
+  watchtowerAutoUpdate: z.boolean().default(false),
   backupJobIds: z.array(z.string().trim().min(1).max(100)).max(SITE_BACKUP_JOB_LIMIT).default([]).transform(dedupeStrings),
 });
 

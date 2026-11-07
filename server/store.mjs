@@ -138,6 +138,8 @@ export function createStore(config) {
     // Legacy records predate these fields; default them here independently of the shared schema defaults.
     repositoryUrls: data.repositoryUrls ?? [],
     notes: data.notes ?? '',
+    cloudImages: data.cloudImages ?? [],
+    watchtowerAutoUpdate: data.watchtowerAutoUpdate ?? false,
     backupJobIds: siteJobIds(id),
     createdAt: data.createdAt ?? null,
     updatedAt: data.updatedAt ?? null,
@@ -300,7 +302,7 @@ export function createStore(config) {
       if (id && !previous) throw new AppError('Site does not exist.', 404, 'SITE_NOT_FOUND');
       const parsed = siteSchema.parse(previous ? mergeConfig(previous, input) : input);
       const now = new Date().toISOString();
-      const record = { name: parsed.name, domains: parsed.domains, tags: parsed.tags, repositoryUrls: parsed.repositoryUrls, notes: parsed.notes, createdAt: previous?.createdAt || now, updatedAt: now };
+      const record = { name: parsed.name, domains: parsed.domains, tags: parsed.tags, repositoryUrls: parsed.repositoryUrls, notes: parsed.notes, cloudImages: parsed.cloudImages, watchtowerAutoUpdate: parsed.watchtowerAutoUpdate, createdAt: previous?.createdAt || now, updatedAt: now };
       return inTransaction(() => {
         const findJob = db.prepare('SELECT 1 AS present FROM jobs WHERE id=?');
         const missing = parsed.backupJobIds.filter((jobId) => !findJob.get(jobId));

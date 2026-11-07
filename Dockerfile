@@ -7,8 +7,11 @@ COPY web ./web
 RUN npm run build
 
 FROM node:24-bookworm-slim
+COPY scripts/install-rclone.sh /tmp/install-rclone.sh
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates rclone 7zip tar sqlite3 postgresql-client mariadb-client tzdata \
+    ca-certificates curl unzip 7zip tar sqlite3 postgresql-client mariadb-client tzdata \
+    && bash /tmp/install-rclone.sh /usr/local/bin \
+    && rm /tmp/install-rclone.sh \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./

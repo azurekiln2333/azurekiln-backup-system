@@ -70,7 +70,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rclone 7zip tar sqlite3
+          sudo apt-get install -y --no-install-recommends ca-certificates curl unzip 7zip tar sqlite3
+          sudo bash scripts/install-rclone.sh /usr/local/bin
+          echo "rclone=/usr/local/bin/rclone" >> "$GITHUB_OUTPUT"
           seven_zip="$(command -v 7zz || command -v 7z)"
           test -x "$seven_zip"
           echo "seven_zip=$seven_zip" >> "$GITHUB_OUTPUT"
@@ -81,7 +83,9 @@ jobs:
 
       - name: Run tests
         env:
+          RCLONE_BINARY: ${{ steps.tools.outputs.rclone }}
           SEVEN_ZIP_BINARY: ${{ steps.tools.outputs.seven_zip }}
+          RUN_BACKUP_INTEGRATION: '1'
         run: npm test
 
       # Browser and layout checks are sequential on purpose: they contend for the
@@ -97,13 +101,22 @@ jobs:
 
       - name: Browser regression checks
         env:
+          RCLONE_BINARY: ${{ steps.tools.outputs.rclone }}
+          SEVEN_ZIP_BINARY: ${{ steps.tools.outputs.seven_zip }}
           BROWSER_EXECUTABLE: ${{ steps.browser.outputs.path }}
         run: npm run check:browser
 
       - name: Layout regression checks
         env:
+          RCLONE_BINARY: ${{ steps.tools.outputs.rclone }}
+          SEVEN_ZIP_BINARY: ${{ steps.tools.outputs.seven_zip }}
           BROWSER_EXECUTABLE: ${{ steps.browser.outputs.path }}
         run: npm run check:layout
+
+      - name: Site deployment note checks
+        env:
+          BROWSER_EXECUTABLE: ${{ steps.browser.outputs.path }}
+        run: node scripts/check-site-deployment.mjs
 
       # Fail closed: a tag whose tag/version metadata disagrees must never reach
       # the publishing jobs, so validate it inside the verification job too.

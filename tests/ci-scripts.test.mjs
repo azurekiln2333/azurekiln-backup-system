@@ -37,6 +37,18 @@ test('ci-verify exports absolute tool paths and proves execution', () => {
   assert.doesNotMatch(ciVerify, /export TAR_BINARY=/);
 });
 
+test('CI and the runtime image provision an encryption-capable rclone from one pinned installer', () => {
+  const workflow = read('.github/workflows/build-and-release.yml');
+  const dockerfile = read('Dockerfile');
+  const installer = read('scripts/install-rclone.sh');
+  for (const source of [workflow, dockerfile, ciVerify]) assert.match(source, /scripts\/install-rclone\.sh/);
+  assert.match(ciVerify, /rclone_supports_encryption/);
+  assert.match(installer, /config encryption set --help/);
+  assert.ok(installer.indexOf('sha256sum --check') < installer.indexOf('unzip -q'), 'verify bytes before extracting');
+  assert.match(workflow, /RUN_BACKUP_INTEGRATION: '1'/);
+  assert.match(workflow, /RCLONE_BINARY: \$\{\{ steps\.tools\.outputs\.rclone \}\}/);
+});
+
 test('ci-verify runs browser and layout checks sequentially after the build', () => {
   const check = ciVerify.indexOf('run_step check npm run check');
   const testStep = ciVerify.indexOf('run_step test run_tests');
@@ -112,9 +124,8 @@ test('both scripts avoid bash constructs that break on older runners', () => {
     assert.ok(source.startsWith('#!/usr/bin/env bash'), `${name} needs a bash shebang`);
     assert.doesNotMatch(source, /\bsudo\b/, `${name} must not rely on sudo`);
   }
-  // A variable name may not start with a digit for the ${NAME-default} form, so
-  // only the explicit colon form is legal here. Guard against a regression to
-  // the bare form, which is a parse error the moment the branch is expanded.
-  assert.match(ciVerify, /\$\{7ZZ_BINARY:-\}/);
-  assert.doesNotMatch(ciVerify, /\$\{7ZZ_BINARY-\}/);
+  // Environment keys can start with a digit, but neither Bash parameter form
+  // can read them. Use printenv rather than a failing ${7ZZ_BINARY...} expansion.
+  assert.match(ciVerify, /printenv 7ZZ_BINARY/);
+  assert.doesNotMatch(ciVerify, /\$\{?7ZZ_BINARY/);
 });

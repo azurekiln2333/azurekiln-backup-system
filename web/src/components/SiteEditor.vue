@@ -4,7 +4,7 @@ import { Plus, Save, Search, Trash2 } from 'lucide-vue-next';
 import { ApiError } from '../api';
 import { friendlyError, rawError } from '../errors';
 import {
-  SITE_DOMAIN_LIMIT, SITE_DOMAIN_MAX_LENGTH, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT, SITE_REPOSITORY_MAX_LENGTH,
+  SITE_CLOUD_IMAGE_LIMIT, SITE_CLOUD_IMAGE_MAX_LENGTH, SITE_DOMAIN_LIMIT, SITE_DOMAIN_MAX_LENGTH, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT, SITE_REPOSITORY_MAX_LENGTH,
   siteDomainHostname, siteDomainLink, siteRepositoryLink, siteSchema,
 } from '../../../shared/contracts.mjs';
 import Modal from './Modal.vue';
@@ -35,9 +35,11 @@ const form = reactive({
   tags: [...(props.site?.tags ?? [])],
   repositoryUrls: [...(props.site?.repositoryUrls ?? [])],
   notes: props.site?.notes ?? '',
+  cloudImages: [...(props.site?.cloudImages ?? [])],
+  watchtowerAutoUpdate: props.site?.watchtowerAutoUpdate ?? false,
   backupJobIds: [...(props.site?.backupJobIds ?? [])],
 });
-const errors = ref<{ name?: string; domains?: string; tags?: string; repositories?: string; notes?: string; jobs?: string }>({});
+const errors = ref<{ name?: string; domains?: string; tags?: string; repositories?: string; notes?: string; cloudImages?: string; watchtowerAutoUpdate?: string; jobs?: string }>({});
 const error = ref('');
 /** Raw low-level text, tooltip only; user-facing copy goes through friendlyError. */
 const errorDetail = ref('');
@@ -78,6 +80,8 @@ function fieldMessage(field: string, message: string) {
   if (field === 'tags') return /at most 10/.test(message) ? '最多 10 个标签' : (message || '标签无效。');
   if (field === 'repositoryUrls') return /at most/.test(message) ? `最多 ${SITE_REPOSITORY_LIMIT} 个仓库地址` : (message || '仓库地址无效。');
   if (field === 'notes') return /at most/.test(message) ? `备注最多 ${SITE_NOTES_MAX_LENGTH} 个字符` : (message || '备注无效。');
+  if (field === 'cloudImages') return message || '镜像引用无效。';
+  if (field === 'watchtowerAutoUpdate') return '请检查 Watchtower 自动更新记录。';
   if (field === 'backupJobIds') return /at most/.test(message) ? '关联任务过多。' : '关联任务无效。';
   return message || '请检查站点信息。';
 }
@@ -89,6 +93,7 @@ function toggleJob(id: string) {
 }
 function normalizeDomains() { return form.domains.map(value => value.trim()).filter(Boolean); }
 function normalizeRepositories() { return form.repositoryUrls.map(value => value.trim()).filter(Boolean); }
+function normalizeCloudImages() { return form.cloudImages.map(value => value.trim()).filter(Boolean); }
 
 /**
  * Full-address preview for the editor only. The list row shows the first
@@ -114,7 +119,7 @@ const repositoryPreview = computed(() => normalizeRepositories().map(value => {
 function siteFailure(cause: unknown) {
   if (cause instanceof ApiError) {
     if (cause.code === 'SITE_NOT_FOUND') return '该站点已被删除，请关闭后重新创建。';
-    if (cause.code === 'VALIDATION_FAILED') return '站点信息未通过校验，请检查名称、地址、仓库和标签。';
+    if (cause.code === 'VALIDATION_FAILED') return '站点信息未通过校验，请检查名称、地址、仓库、镜像和标签。';
   }
   return friendlyError(cause, '保存站点失败，请稍后重试');
 }
@@ -123,13 +128,15 @@ async function save() {
   error.value = '';
   errorDetail.value = '';
   // Validate the whole site with the same shared schema the API uses; empty
-  // address/repository rows are treated as "not filled yet" and dropped.
+  // address/repository/image rows are treated as "not filled yet" and dropped.
   const payload = {
     name: form.name,
     domains: normalizeDomains(),
     tags: form.tags,
     repositoryUrls: normalizeRepositories(),
     notes: form.notes,
+    cloudImages: normalizeCloudImages(),
+    watchtowerAutoUpdate: form.watchtowerAutoUpdate,
     backupJobIds: form.backupJobIds,
   };
   const parsed = siteSchema.safeParse(payload);
@@ -145,9 +152,11 @@ async function save() {
       tags: byField.tags,
       repositories: byField.repositoryUrls,
       notes: byField.notes,
+      cloudImages: byField.cloudImages,
+      watchtowerAutoUpdate: byField.watchtowerAutoUpdate,
       jobs: byField.backupJobIds,
     };
-    error.value = byField.domains || byField.repositoryUrls || byField.notes || byField.tags || byField.name || byField.backupJobIds || '请检查站点信息。';
+    error.value = byField.domains || byField.repositoryUrls || byField.cloudImages || byField.watchtowerAutoUpdate || byField.notes || byField.tags || byField.name || byField.backupJobIds || '请检查站点信息。';
     return;
   }
   if (staleJobIds.value.length) {
@@ -221,6 +230,28 @@ async function save() {
               <p v-if="repositoryPreview.length" class="field-hint">将显示：<span class="mono">{{ repositoryPreview.join('、') }}</span></p>
               <small v-if="errors.repositories" class="field-error">{{ errors.repositories }}</small>
             </div>
+          </div>
+
+          <div class="field full">
+            <span>云端镜像</span>
+            <div class="domain-editor">
+              <div v-for="(image, index) in form.cloudImages" :key="index" class="domain-row">
+                <input v-model="form.cloudImages[index]" :maxlength="SITE_CLOUD_IMAGE_MAX_LENGTH" :aria-label="`云端镜像 ${index + 1}`" placeholder="ghcr.io/owner/app:latest 或 registry/app@sha256:…" />
+                <button type="button" class="icon-button danger" :title="`删除镜像 ${index + 1}`" :aria-label="`删除镜像 ${index + 1}`" @click="form.cloudImages.splice(index, 1)"><Trash2 :size="16" /></button>
+              </div>
+              <div class="domain-actions">
+                <button type="button" class="button secondary small" :disabled="form.cloudImages.length >= SITE_CLOUD_IMAGE_LIMIT" @click="form.cloudImages.push('')"><Plus :size="15" />添加镜像</button>
+                <span class="muted">可选标签或 digest，最多 {{ SITE_CLOUD_IMAGE_LIMIT }} 个，每个最多 {{ SITE_CLOUD_IMAGE_MAX_LENGTH }} 个字符。</span>
+              </div>
+              <small class="field-hint">仅记录镜像引用，不连接镜像仓库；请勿填写账号密码。</small>
+              <small v-if="errors.cloudImages" class="field-error">{{ errors.cloudImages }}</small>
+            </div>
+          </div>
+
+          <div class="field full">
+            <label class="check-row"><input v-model="form.watchtowerAutoUpdate" type="checkbox" aria-describedby="site-watchtower-hint" /><span>该站点通过 Watchtower 自动拉取更新</span></label>
+            <small id="site-watchtower-hint" class="field-hint">仅记录该站点已有的部署方式；自动更新需在站点的部署配置中设置，此处不会配置 Watchtower。</small>
+            <small v-if="errors.watchtowerAutoUpdate" class="field-error">{{ errors.watchtowerAutoUpdate }}</small>
           </div>
 
           <label class="field full">备注

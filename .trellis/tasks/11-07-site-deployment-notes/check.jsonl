@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Site defaults, independent PATCH clears, atomic failures, no execution effects and restore"}
+{"file":".trellis/spec/backend/site-deployment-notes.md","reason":"Exact image limits/types/normalization, note-only toggle and compatibility assertions"}
+{"file":".trellis/spec/backend/tool-provisioning.md","reason":"Check provisioning/capability failure behavior, numeric environment-key handling and real Linux CI evidence"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Editor schema alignment, accessible image rows and note-only toggle, responsive visual verification"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify authoritative GET after writes and shared-file isolation"}

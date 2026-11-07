@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/backup-lifecycle.md","reason":"Site metadata persistence, transactional PATCH, legacy defaults and backup restore contracts"}
+{"file":".trellis/spec/backend/site-deployment-notes.md","reason":"Exact cloudImages/watchtowerAutoUpdate contracts, error matrix and metadata-only side effects"}
+{"file":".trellis/spec/backend/tool-provisioning.md","reason":"Confirmed CI failure repair: compatible pinned rclone, capability checks and shared runtime image installation"}
+{"file":".trellis/spec/frontend/ui-api.md","reason":"Site editor ownership, draft preservation, accessibility and browser/layout gates"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Extend existing shared validation and list controls rather than duplicating contracts"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"New site fields flow across validation, projection, SQLite and frontend"}

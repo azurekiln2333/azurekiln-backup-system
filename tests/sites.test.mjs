@@ -22,7 +22,7 @@ import { createApp } from '../server/app.mjs';
 import { createRcloneService } from '../server/rclone.mjs';
 import { createBackupService } from '../server/backup.mjs';
 import { applyPendingSystemRestore, stageSystemRestore } from '../server/system-restore.mjs';
-import { siteDomainHostname, siteRepositoryLink, siteRepositoryProvider, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT } from '../shared/contracts.mjs';
+import { siteDomainHostname, siteRepositoryLink, siteRepositoryProvider, SITE_CLOUD_IMAGE_LIMIT, SITE_CLOUD_IMAGE_MAX_LENGTH, SITE_NOTES_MAX_LENGTH, SITE_REPOSITORY_LIMIT } from '../shared/contracts.mjs';
 
 const rcloneBinary = process.env.RCLONE_BINARY || (process.platform === 'win32' ? path.resolve('.artifacts/tools/rclone-v1.75.1-windows-amd64/rclone.exe') : 'rclone');
 const sevenZipBinary = process.env.SEVEN_ZIP_BINARY || (process.platform === 'win32' ? path.resolve('.artifacts/tools/7zip/x64/7za.exe') : '7z');
@@ -403,6 +403,139 @@ test('site repositories reject unsupported schemes, credentials and malformed va
   assert.deepEqual((await context.request('/api/sites')).data, [], 'no rejected repository create left a record behind');
 });
 
+test('site deployment notes persist normalized image references and strict boolean defaults through SQLite reopen', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    assert.equal(new URL(input).origin, context.config.publicUrl, 'image metadata never probes a registry');
+    return originalFetch(input, options);
+  });
+  const empty = await createSite(context, { name: 'No deployment notes' });
+  assert.deepEqual(empty.cloudImages, [], 'new sites default to an empty image list');
+  assert.equal(empty.watchtowerAutoUpdate, false, 'new sites default to no Watchtower note');
+  const digest = `registry.example:5443/Team/App@sha256:${'a'.repeat(64)}`;
+  const cloudImages = ['ghcr.io/Owner/App:Latest', digest, 'ghcr.io/owner/app:latest'];
+  const site = await createSite(context, {
+    name: 'Image inventory',
+    cloudImages: [`  ${cloudImages[0]}  `, digest, cloudImages[0], cloudImages[2]],
+    watchtowerAutoUpdate: true,
+  });
+  assert.deepEqual(site.cloudImages, cloudImages, 'trim and exact deduplication retain first order, case, tags, ports and digests');
+  assert.equal(site.watchtowerAutoUpdate, true);
+  assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data, site);
+  assert.deepEqual((await context.request('/api/sites')).data.find((item) => item.id === site.id), site);
+  const raw = new DatabaseSync(path.join(context.config.dataDir, 'state.sqlite'), { readOnly: true });
+  try {
+    const metadata = JSON.parse(raw.prepare('SELECT data FROM sites WHERE id=?').get(site.id).data);
+    assert.deepEqual(metadata.cloudImages, cloudImages, 'images are explicitly persisted in site JSON');
+    assert.equal(metadata.watchtowerAutoUpdate, true, 'the note is explicitly persisted in site JSON');
+  } finally { raw.close(); }
+  await context.shutdown();
+  await context.boot();
+  assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data, site, 'the normalized metadata survives a real store restart');
+});
+
+test('site deployment notes enforce image boundaries and strict types before any create is written', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const invalid = [
+    { cloudImages: 'registry/app:tag' },
+    { cloudImages: null },
+    { cloudImages: {} },
+    { cloudImages: [''] },
+    { cloudImages: ['   '] },
+    { cloudImages: [null] },
+    { cloudImages: [12] },
+    { cloudImages: [{}] },
+    { cloudImages: ['x'.repeat(SITE_CLOUD_IMAGE_MAX_LENGTH + 1)] },
+    { cloudImages: Array.from({ length: SITE_CLOUD_IMAGE_LIMIT + 1 }, () => 'registry/app:duplicate') },
+    ...[' ', '\t', '\n', '\0', '\u007f', '\u0085', '\u00a0'].map((separator) => ({ cloudImages: [`registry/app${separator}:tag`] })),
+    ...[null, 0, 1, 'true', 'false', [], {}].map((watchtowerAutoUpdate) => ({ watchtowerAutoUpdate })),
+  ];
+  for (const patch of invalid) {
+    const response = await context.request('/api/sites', { method: 'POST', body: siteInput(patch) });
+    assert.equal(response.status, 400, `reject ${JSON.stringify(patch)} without coercion`);
+    assert.equal(response.data.error.code, 'VALIDATION_FAILED');
+    const field = Object.keys(patch)[0];
+    assert.ok(response.data.error.details.some((issue) => issue.path.split('.')[0] === field), `validation identifies ${field}`);
+  }
+  assert.deepEqual((await context.request('/api/sites')).data, [], 'rejected creates leave no inventory rows');
+  const prefix = 'registry.example/app:';
+  const longest = prefix + 'x'.repeat(SITE_CLOUD_IMAGE_MAX_LENGTH - prefix.length);
+  const maximum = await createSite(context, {
+    name: 'At both image limits',
+    cloudImages: [longest, ...Array.from({ length: SITE_CLOUD_IMAGE_LIMIT - 1 }, (_, index) => `registry.example/app:${index}`)],
+    watchtowerAutoUpdate: false,
+  });
+  assert.equal(maximum.cloudImages.length, SITE_CLOUD_IMAGE_LIMIT);
+  assert.equal(maximum.cloudImages[0].length, SITE_CLOUD_IMAGE_MAX_LENGTH);
+  assert.equal(maximum.watchtowerAutoUpdate, false);
+});
+
+test('deployment-note PATCH preserves omissions, clears independently and never changes jobs or runtime configuration', async (t) => {
+  const context = await fixture();
+  t.after(() => context.close());
+  await context.setup();
+  const job = await createJob(context, { name: 'Operational state stays local' });
+  const run = context.store.createRun(context.store.getJob(job.id));
+  context.store.updateRun(run.id, { status: 'succeeded', finishedAt: new Date().toISOString(), cleanupStatus: 'cleaned', notificationStatus: 'skipped' });
+  context.store.saveWatchBaseline(job.id, job.sourcePath, { 'kept.txt': [10, 123] });
+  const schedulerRefresh = t.mock.method(context.runtime.scheduler, 'refresh');
+  const watcherRefresh = t.mock.method(context.runtime.watcher, 'refresh');
+  const enqueue = t.mock.method(context.runtime.backupService, 'enqueue');
+  const statePath = path.join(context.config.dataDir, 'state.sqlite');
+  const operationalState = () => {
+    const db = new DatabaseSync(statePath, { readOnly: true });
+    try {
+      return Object.fromEntries(['jobs', 'runs', 'logs', 'settings', 'watch_baselines', 'nodes', 'synced_jobs'].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    } finally { db.close(); }
+  };
+  const beforeRuntime = operationalState();
+  const beforeRclone = readFileSync(context.config.rcloneConfigPath, 'utf8');
+  const site = await createSite(context, {
+    name: 'Deployment patch', domains: ['example.com'], tags: ['prod'], notes: 'keep',
+    repositoryUrls: ['https://github.com/owner/repo'], backupJobIds: [job.id],
+    cloudImages: ['registry.example/app:v1', 'registry.example/sidecar:latest'], watchtowerAutoUpdate: true,
+  });
+  const patch = async (body) => {
+    const response = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body });
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+    return response.data;
+  };
+  const renamed = await patch({ name: 'Renamed deployment' });
+  assert.deepEqual(renamed.cloudImages, site.cloudImages, 'omitted images survive a metadata update');
+  assert.equal(renamed.watchtowerAutoUpdate, true, 'omitted boolean survives a metadata update');
+  const noImages = await patch({ cloudImages: [] });
+  assert.deepEqual(noImages.cloudImages, []);
+  assert.equal(noImages.watchtowerAutoUpdate, true, 'clearing images preserves the update note');
+  const replacement = await patch({ cloudImages: ['registry.example/new:v2', 'registry.example/new:v2'] });
+  assert.deepEqual(replacement.cloudImages, ['registry.example/new:v2'], 'images replace as a whole and deduplicate');
+  const noWatchtower = await patch({ watchtowerAutoUpdate: false });
+  assert.equal(noWatchtower.watchtowerAutoUpdate, false);
+  assert.deepEqual(noWatchtower.cloudImages, replacement.cloudImages, 'clearing the note preserves images');
+  for (const field of ['domains', 'tags', 'notes', 'repositoryUrls', 'backupJobIds', 'createdAt']) assert.deepEqual(noWatchtower[field], site[field], `${field} remains independent`);
+
+  for (const invalid of [{ cloudImages: ['registry/app:bad tag'] }, { watchtowerAutoUpdate: 'true' }]) {
+    const rejected = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { name: 'Must not apply', backupJobIds: [], ...invalid } });
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.data.error.code, 'VALIDATION_FAILED');
+    assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data, noWatchtower, 'invalid deployment metadata rolls back metadata, timestamp and link changes');
+  }
+  const missingJob = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { cloudImages: [], watchtowerAutoUpdate: true, backupJobIds: ['missing-job'] } });
+  assert.equal(missingJob.status, 400);
+  assert.equal(missingJob.data.error.code, 'SITE_JOB_NOT_FOUND');
+  assert.deepEqual((await context.request(`/api/sites/${site.id}`)).data, noWatchtower, 'invalid links also preserve both deployment fields');
+  assert.deepEqual(operationalState(), beforeRuntime, 'site saves never write jobs, history, watcher baselines, nodes or settings');
+  assert.equal(readFileSync(context.config.rcloneConfigPath, 'utf8'), beforeRclone);
+  assert.equal(schedulerRefresh.mock.callCount(), 0);
+  assert.equal(watcherRefresh.mock.callCount(), 0);
+  assert.equal(enqueue.mock.callCount(), 0);
+  assert.deepEqual(foreignKeyViolations(statePath), []);
+});
+
 test('site notes trim, keep internal newlines, cap length and reject wrong types', async (t) => {
   const context = await fixture();
   t.after(() => context.close());
@@ -465,37 +598,49 @@ test('PATCH clears repositories and notes independently without touching domains
   assert.deepEqual(after, before, 'a rejected repository write leaves metadata, timestamps and links intact');
 });
 
-test('legacy site rows without repository/notes fields read as empty defaults and stay editable', async (t) => {
+test('legacy site rows without optional metadata read as empty defaults without rewriting storage and stay editable', async (t) => {
   const context = await fixture();
   t.after(() => context.close());
   await context.setup();
   const job = await createJob(context, { name: 'Legacy job' });
-  const site = await createSite(context, { name: 'Legacy', domains: ['legacy.example.com'], tags: ['prod'], repositoryUrls: ['https://github.com/owner/repo'], notes: 'old note', backupJobIds: [job.id] });
+  const site = await createSite(context, { name: 'Legacy', domains: ['legacy.example.com'], tags: ['prod'], repositoryUrls: ['https://github.com/owner/repo'], notes: 'old note', cloudImages: ['registry.example/legacy:v1'], watchtowerAutoUpdate: true, backupJobIds: [job.id] });
   await context.shutdown();
 
   // Emulate a record written before the extension: the site row exists, but the
   // new metadata keys are absent from the stored JSON.
   const statePath = path.join(context.config.dataDir, 'state.sqlite');
   const db = new DatabaseSync(statePath);
+  let legacyJson;
   try {
     const row = db.prepare('SELECT data FROM sites WHERE id=?').get(site.id);
     const stored = JSON.parse(row.data);
     delete stored.repositoryUrls;
     delete stored.notes;
-    db.prepare('UPDATE sites SET data=? WHERE id=?').run(JSON.stringify(stored), site.id);
+    delete stored.cloudImages;
+    delete stored.watchtowerAutoUpdate;
+    legacyJson = JSON.stringify(stored);
+    db.prepare('UPDATE sites SET data=? WHERE id=?').run(legacyJson, site.id);
   } finally { db.close(); }
   await context.boot();
 
   const read = (await context.request(`/api/sites/${site.id}`)).data;
   assert.deepEqual(read.repositoryUrls, [], 'a legacy record defaults repositories to [] independently of the schema');
   assert.equal(read.notes, '', 'a legacy record defaults notes to the empty value');
+  assert.deepEqual(read.cloudImages, [], 'a legacy record defaults images to an empty array');
+  assert.equal(read.watchtowerAutoUpdate, false, 'a legacy record defaults the update note to false');
+  assert.deepEqual((await context.request('/api/sites')).data.find((item) => item.id === site.id), read, 'list and member reads share legacy defaults');
+  const unchanged = new DatabaseSync(statePath, { readOnly: true });
+  try { assert.equal(unchanged.prepare('SELECT data FROM sites WHERE id=?').get(site.id).data, legacyJson, 'startup and reads do not bulk-rewrite legacy site JSON'); }
+  finally { unchanged.close(); }
   assert.deepEqual(read.domains, ['https://legacy.example.com/'], 'legacy addresses are unchanged');
   assert.deepEqual(read.backupJobIds, [job.id], 'legacy associations are unchanged');
 
-  const patched = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://github.com/owner/new'], notes: 'added' } });
+  const patched = await context.request(`/api/sites/${site.id}`, { method: 'PATCH', body: { repositoryUrls: ['https://github.com/owner/new'], notes: 'added', cloudImages: ['registry.example/current:v2'], watchtowerAutoUpdate: true } });
   assert.equal(patched.status, 200, JSON.stringify(patched.data));
   assert.deepEqual(patched.data.repositoryUrls, ['https://github.com/owner/new']);
   assert.equal(patched.data.notes, 'added');
+  assert.deepEqual(patched.data.cloudImages, ['registry.example/current:v2']);
+  assert.equal(patched.data.watchtowerAutoUpdate, true);
   assert.deepEqual(patched.data.backupJobIds, [job.id]);
   assert.deepEqual(foreignKeyViolations(statePath), []);
 });
@@ -677,8 +822,8 @@ test('a current system snapshot restored through the real restore path keeps sit
   await context.setup();
   const jobA = await createJob(context, { name: 'Restored DB' });
   const jobB = await createJob(context, { name: 'Restored Files', sourcePath: path.join(context.config.sourceRoots[0], 'directory-b') });
-  const siteOne = await createSite(context, { name: 'Restored Site One', domains: ['one.example.com', 'https://two.example.com/Path'], tags: ['prod', 'web'], repositoryUrls: ['https://github.com/owner/one.git', 'https://gitee.com/owner/mirror?tab=readme'], notes: 'restore note\nline two', backupJobIds: [jobA.id, jobB.id] });
-  const siteTwo = await createSite(context, { name: 'Restored Site Two', domains: [], tags: ['prod'], repositoryUrls: ['https://hub.gitcode.com/owner/deep/repo'], notes: '', backupJobIds: [jobA.id] });
+  const siteOne = await createSite(context, { name: 'Restored Site One', domains: ['one.example.com', 'https://two.example.com/Path'], tags: ['prod', 'web'], repositoryUrls: ['https://github.com/owner/one.git', 'https://gitee.com/owner/mirror?tab=readme'], notes: 'restore note\nline two', cloudImages: ['ghcr.io/Owner/App:Release', `registry.example/worker@sha256:${'b'.repeat(64)}`], watchtowerAutoUpdate: true, backupJobIds: [jobA.id, jobB.id] });
+  const siteTwo = await createSite(context, { name: 'Restored Site Two', domains: [], tags: ['prod'], repositoryUrls: ['https://hub.gitcode.com/owner/deep/repo'], notes: '', cloudImages: [], watchtowerAutoUpdate: false, backupJobIds: [jobA.id] });
   const savedSites = (await context.request('/api/sites')).data;
 
   const statePath = await snapshotState(context.config, path.join(target.folder, 'snapshot', 'state.sqlite'));
@@ -694,7 +839,7 @@ test('a current system snapshot restored through the real restore path keeps sit
   try {
     const sites = (await restored.request('/api/sites')).data;
     const byId = new Map(sites.map((site) => [site.id, site]));
-    assert.deepEqual(byId.get(siteOne.id), savedSites.find((site) => site.id === siteOne.id), 'site identities, domains, tags and links survive a real restore');
+    assert.deepEqual(byId.get(siteOne.id), savedSites.find((site) => site.id === siteOne.id), 'site identities, deployment notes and links survive a real restore');
     assert.deepEqual(byId.get(siteTwo.id), savedSites.find((site) => site.id === siteTwo.id));
     assert.deepEqual([...byId.get(siteOne.id).backupJobIds].sort(), [jobA.id, jobB.id].sort());
     assert.deepEqual(byId.get(siteTwo.id).backupJobIds, [jobA.id]);
@@ -771,7 +916,7 @@ test('a site inventory survives a real system-configuration backup export and st
   try {
     // Seed the state that has to travel inside the system archive.
     const directoryJob = store.saveJob(inputJob(config, { name: 'Exported directory' }));
-    const exportedSite = store.saveSite({ name: 'Exported site', domains: ['exported.example.com', 'https://portal.exported.example.com:8443/app?x=1#frag'], tags: ['prod', 'edge'], repositoryUrls: ['https://github.com/owner/exported.git', 'gitcode.com/owner/mirror'], notes: 'exported note\nsecond line', backupJobIds: [directoryJob.id] });
+    const exportedSite = store.saveSite({ name: 'Exported site', domains: ['exported.example.com', 'https://portal.exported.example.com:8443/app?x=1#frag'], tags: ['prod', 'edge'], repositoryUrls: ['https://github.com/owner/exported.git', 'gitcode.com/owner/mirror'], notes: 'exported note\nsecond line', cloudImages: ['ghcr.io/Owner/App:Release', `registry.example/worker@sha256:${'c'.repeat(64)}`], watchtowerAutoUpdate: true, backupJobIds: [directoryJob.id] });
     const systemJob = store.saveJob({ name: '系统配置', type: 'system', enabled: true, destinations: [{ remote: 'test', path: 'system' }], archive: { format: '7z', encrypted: true, password: 'system-export-password' }, retry: { attempts: 1, delaySeconds: 1 } });
 
     const run = await waitForRun(store, service.enqueue(systemJob.id).id);
@@ -795,7 +940,7 @@ test('a site inventory survives a real system-configuration backup export and st
     const restoredStore = createStore(target.config);
     try {
       const sites = restoredStore.listSites();
-      assert.deepEqual(sites, [exportedSite], 'site identity, domains, tags and links round-trip through a real encrypted archive');
+      assert.deepEqual(sites, [exportedSite], 'site identity, deployment notes and links round-trip through a real encrypted archive');
       assert.ok(restoredStore.getJob(directoryJob.id), 'the linked job is restored with the site');
       assert.deepEqual(foreignKeyViolations(path.join(target.config.dataDir, 'state.sqlite')), [], 'restored relation rows pass foreign_key_check');
     } finally { restoredStore.close(); }

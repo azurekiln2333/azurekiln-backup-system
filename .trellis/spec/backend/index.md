@@ -19,6 +19,8 @@ Read `backup-lifecycle.md` and the active task contracts. Run `npm test`, `npm r
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Backup Runtime Contracts](./backup-lifecycle.md) | APIs, node sync, persistence, adapters, lifecycle, deployment filenames/discovery and safety tests | Implemented |
+| [Site Deployment Notes](./site-deployment-notes.md) | Cloud image references and informational Watchtower state | Implemented |
+| [Backup Tool Provisioning](./tool-provisioning.md) | Pinned rclone installation shared by CI and runtime images | Implemented |
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
 | [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | To fill |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |

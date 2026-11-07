@@ -65,8 +65,8 @@ Environment overrides (all optional):
   CI_VERIFY_MUST_RUN=<patterns>         newline-separated test names that must not be skipped
   CI_VERIFY_ARTIFACT_DIR=<dir>          logs and screenshots (default: .artifacts/ci)
   PREPARE_RELEASE_SCRIPT=<path>         release helper for verify-and-package
-  CI_VERIFY_ALLOW_DEV=1                 permit installing rclone/7-Zip/tar with the host package manager
-                                        when they are missing (CI containers only)
+  CI_VERIFY_ALLOW_DEV=1                 permit installing missing tools and the pinned rclone
+                                        when missing/incompatible (CI containers only)
   7ZZ_BINARY/SEVEN_ZIP_BINARY           explicit 7-Zip executable (7zz, 7zzs or 7z)
   RCLONE_BINARY/SQLITE_BINARY/PG_DUMP_BINARY/MARIADB_DUMP_BINARY  explicit tool paths
   TAR_BINARY                            tar candidate used only to resolve a path (tar has no app override)
@@ -126,22 +126,32 @@ install_host_tools() {
   # Only ever used inside a disposable CI container; a developer machine must
   # install its own tools so the local suite keeps its documented behaviour.
   if [[ "${CI_VERIFY_ALLOW_DEV:-0}" != "1" ]]; then
-    die "backup tools are missing. Install rclone, 7-Zip (7zz), tar, sqlite3, postgresql-client and mariadb-client, or set CI_VERIFY_ALLOW_DEV=1 inside a disposable CI container."
+    die "backup tools are missing or incompatible. Install a rclone supporting config encryption set, 7-Zip (7zz), tar, sqlite3, postgresql-client and mariadb-client, or set CI_VERIFY_ALLOW_DEV=1 inside a disposable CI container."
   fi
   [[ "$(id -u)" == "0" ]] || die "CI_VERIFY_ALLOW_DEV=1 requires root to install packages"
   require_cmd apt-get
   log "installing missing backup tools with apt-get"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y --no-install-recommends ca-certificates rclone 7zip tar sqlite3 postgresql-client mariadb-client
+  apt-get install -y --no-install-recommends ca-certificates curl unzip 7zip tar sqlite3 postgresql-client mariadb-client
+  bash "$REPO_ROOT/scripts/install-rclone.sh" /usr/local/bin
   HOST_TOOLS_INSTALLED=1
+}
+
+rclone_supports_encryption() {
+  local help
+  help="$("$1" config encryption set --help 2>&1)" || return 1
+  [[ "$help" == *'rclone config encryption set [flags]'* ]]
 }
 
 resolve_tools() {
   local rclone_candidates=() seven_zip_candidates=() tar_candidates=() sqlite_candidates=() pg_candidates=() mysql_candidates=()
   [[ -n "${RCLONE_BINARY:-}" ]] && rclone_candidates+=("$RCLONE_BINARY")
   rclone_candidates+=(rclone /usr/bin/rclone /usr/local/bin/rclone)
-  if [[ -n "${7ZZ_BINARY:-}" ]]; then seven_zip_candidates+=("$7ZZ_BINARY"); fi
+  # Environment keys beginning with a digit cannot be expanded as Bash variables.
+  local seven_zip_override
+  seven_zip_override="$(printenv 7ZZ_BINARY || true)"
+  [[ -n "$seven_zip_override" ]] && seven_zip_candidates+=("$seven_zip_override")
   if [[ -n "${SEVEN_ZIP_BINARY:-}" ]]; then seven_zip_candidates+=("$SEVEN_ZIP_BINARY"); fi
   # 7zz is the current upstream name; 7zzs is the static build; 7z is Debian's
   # 7zip package entry point. tests/newapi.test.mjs falls back to '7z' on Linux.
@@ -158,6 +168,10 @@ resolve_tools() {
 
   local missing=0
   if pick_executable "${rclone_candidates[@]}"; then TOOL_PATH[rclone]="$RESOLVED_EXECUTABLE"; else missing=1; fi
+  if [[ -n "${TOOL_PATH[rclone]:-}" ]] && ! rclone_supports_encryption "${TOOL_PATH[rclone]}"; then
+    log "rclone lacks config encryption set; installing the pinned compatible release"
+    missing=1
+  fi
   if pick_executable "${seven_zip_candidates[@]}"; then TOOL_PATH[seven_zip]="$RESOLVED_EXECUTABLE"; else missing=1; fi
   if pick_executable "${tar_candidates[@]}"; then TOOL_PATH[tar]="$RESOLVED_EXECUTABLE"; else missing=1; fi
   if pick_executable "${sqlite_candidates[@]}"; then TOOL_PATH[sqlite3]="$RESOLVED_EXECUTABLE"; else missing=1; fi
@@ -168,7 +182,7 @@ resolve_tools() {
   # Escalation path: a disposable CI container with CI_VERIFY_ALLOW_DEV=1.
   install_host_tools
   TOOL_PATH=()
-  if pick_executable rclone /usr/bin/rclone; then TOOL_PATH[rclone]="$RESOLVED_EXECUTABLE"; else die "rclone is still unavailable after installation"; fi
+  if pick_executable /usr/local/bin/rclone rclone /usr/bin/rclone; then TOOL_PATH[rclone]="$RESOLVED_EXECUTABLE"; else die "rclone is still unavailable after installation"; fi
   if pick_executable 7zz 7zzs 7z /usr/bin/7zz /usr/bin/7zzs /usr/bin/7z; then TOOL_PATH[seven_zip]="$RESOLVED_EXECUTABLE"; else die "7-Zip is still unavailable after installation"; fi
   if pick_executable tar /bin/tar /usr/bin/tar; then TOOL_PATH[tar]="$RESOLVED_EXECUTABLE"; else die "tar is still unavailable after installation"; fi
   if pick_executable sqlite3 /usr/bin/sqlite3; then TOOL_PATH[sqlite3]="$RESOLVED_EXECUTABLE"; else die "sqlite3 is still unavailable after installation"; fi
@@ -178,6 +192,7 @@ resolve_tools() {
 
 assert_all_tools() {
   assert_tool rclone version
+  rclone_supports_encryption "${TOOL_PATH[rclone]}" || die "rclone must support config encryption set; use scripts/install-rclone.sh"
   # `7z i` lists formats/formats-in-use and exits 0 for 7zz, 7zzs and 7z.
   assert_tool seven_zip i
   assert_tool tar --version
@@ -550,6 +565,7 @@ main() {
   # Browser and layout checks share the source fixtures, backup tools and the
   # built web/dist output, so they run strictly sequentially.
   run_step browser npm run check:browser
+  run_step site-deployment node scripts/check-site-deployment.mjs
   run_step layout npm run check:layout
 
   if [[ "$mode" == "verify-and-package" ]]; then
