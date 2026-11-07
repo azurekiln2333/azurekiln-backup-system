@@ -1,6 +1,6 @@
 # Site deployment notes completion
 
-Implemented and locally verified on November 7, 2026. Remote submission/CI results are appended after the authorized push and merge.
+Implemented, submitted and fast-forward merged to remote main on November 7, 2026. Local and actual GitHub CI evidence are recorded below.
 
 ## Delivered behavior
 
@@ -43,7 +43,7 @@ Logs and screenshots are under the exported tree's `.artifacts/`; focused UI evi
 
 ## Limits
 
-Local execution used Windows tools. The new installer success path, Linux full run, actual runtime image, CNB pipeline and arm64 execution must have their own evidence; none is inferred from Windows validation. Subsequent GitHub run status is recorded after submission. A branch/main push does not publish a container image, and no production deployment or version-tag release is requested here.
+Local execution used Windows tools. Subsequent GitHub runs independently verified the amd64 installer success path, all 150 Linux tests and the browser flows; their results are recorded below. Runtime-container, CNB-pipeline and arm64 execution remain unverified. A branch/main push does not publish a container image, and no production deployment or version-tag release is requested here.
 
 ## First submission and Linux follow-up
 
@@ -56,3 +56,18 @@ Its browser step then exposed an existing synchronization race at `scripts/check
 Both Chinese and monospace font fallback differ by platform (the project bundles Inter/Manrope but names Windows fonts before generic fallbacks). This is a possible contributor, not a proven root cause; installing an arbitrary font or weakening the density threshold would not establish a valid fix. The remaining portable-list-layout issue is outside this task's metadata/provisioning ownership and is left documented for the UI workstream. Keep the 156px guard intact.
 
 The workflow follow-up places the focused site gate before the independent layout gate and uploads the actual `.artifacts/screenshots`, `.artifacts/layout` and `.artifacts/site-deployment` directories on failure. This ensures the requested editor's cloud evidence and existing layout-failure screenshots are available without masking the failed gate. Runtime images/CNB/arm64 remain unexecuted; no green full-CI or publication claim is made.
+
+## Final remote result
+
+Remote refs were verified on November 7, 2026: both `main` and `feat/nodes-and-notify` contain `91324965acb49449667e7dbb7203fdf38dd1dbd2`. The authorized merge is a normal fast-forward; the branch's submitted history is fully included in main. Work commits are `0245c22` (site deployment notes and shared provisioning), `c02cebb` (browser preselection synchronization) and `9132496` (site-gate ordering and failure artifacts).
+
+GitHub main run `42327196037`, attempt 1, completed with an overall **failure**, independently confirming:
+
+- Type-check and production build passed; rclone 1.75.1 installed successfully.
+- All **150 Linux tests passed, zero failed or skipped**.
+- Full browser regression passed: **65 screenshots and four real encrypted backups**.
+- The requested site-deployment browser gate passed all **six viewport/theme cases**.
+- The existing layout gate still failed at `light/360/sites`: **169px row height versus the 156px maximum**. Failure-detail upload succeeded. The new notes do not render in this row; the global-layout work remains outside this task's ownership.
+- Image publication, release and latest-promotion jobs were skipped. No image or production deployment was published by these branch/main pushes.
+
+The feature acceptance criteria are complete. This task is archived with the separate mobile-layout failure explicitly recorded; the overall cloud pipeline is not reported as green. Other nodes/notification tasks and their uncommitted changes remain active and untouched. Subsequent archive/journal commits only record this completed work.
