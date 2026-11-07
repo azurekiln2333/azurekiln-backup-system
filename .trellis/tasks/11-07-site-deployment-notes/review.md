@@ -44,3 +44,9 @@ The main session also fixed a confirmed pre-existing Bash bug: `${7ZZ_BINARY:-}`
 - Focused browser: main session reported all six combinations passed, `1440/390/360` pixels in light and dark themes, and visually inspected the `1440-light` and `390-dark` screenshots. The resulting JSON records no operational actions or external requests.
 - CI focused tests: main session reported 12 tests, 10 passed and two explicit Windows skips for POSIX installer fixtures. Installer and shared-verifier Bash syntax checks passed, and an actual shell probe reproduced the numeric-key substitution failure before correction.
 - Limits: the reviewer did not execute a Linux installer success path, runtime container, CNB pipeline or arm64 binary. A subsequent real GitHub run and the main session's final full test/check/build/browser/layout results remain necessary evidence and must not be inferred from local Windows checks.
+
+## Linux follow-up review
+
+Main run `42322774496` subsequently completed all 150 Linux tests with zero failures/skips and installed the pinned rclone. Its browser step failed at the pre-existing single-file picker check, immediately after waiting only for the picker heading. The reviewer independently read `PathPicker.vue`: initial `load()` sets loading/clears selection, awaits the source response, then preselects a confirmed regular file; the heading is visible throughout. Thus `isDisabled()` can correctly be true before loading settles, including on reopening.
+
+The parent's two bounded polls wait for the actual confirmable state before preserving the existing path/filename/enabled assertions. This fixes test synchronization without changing product behavior or weakening the checks: a failed source read or broken preselection still times out. Reviewed read-only, with no additional source edits or duplicated test run by the reviewer. The parent owns exact-snapshot browser rerun and subsequent cloud evidence.

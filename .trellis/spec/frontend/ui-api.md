@@ -11,6 +11,7 @@ Apply to `web/`, shared task schemas, and API changes that affect user workflows
 - `JobEditor` accepts `{job?,initialType?,initialSourcePath?}` and emits `saved(job)` or `close`. Only new jobs use the initial source path.
 - `FileManagerView` emits `createJob(path,type)` from the current directory or a directory/file row; App opens the corresponding directory/file JobEditor with that source prefilled.
 - `PathPicker` accepts `{kind,remote?,initialPath?,initialFile?,select?}`; `select` is `directory` by default or `file`. `initialPath` is the browsing directory; `initialFile` is the optional current filename, preselected only once after a listing confirms it is a regular file. Directories navigate in either mode; only a regular file is confirmable in file mode. It emits an absolute source or relative remote path.
+- Browser checks must wait for the initial/reopened file listing's confirmable state before asserting file preselection. The picker heading appears before its asynchronous listing completes; heading visibility alone does not prove a selected file or an enabled confirm button. Keep the path, selected filename and enabled-state assertions after the bounded wait.
 - `RunDetail` accepts `{id}` and polls until execution, cleanup, and notification settle.
 - `nav.ts` exports `navItems` (the page registry), the explicit `Page` union, `isPage(value)`, and `pageTitle(page)`. Extend both the union and registry when adding a page.
 - `errors.ts` exports `friendlyError(cause, fallback?)` and `rawError(cause)` for user-facing error copy.

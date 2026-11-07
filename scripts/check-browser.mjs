@@ -598,6 +598,7 @@ try {
 
   await dialog().getByRole('button', { name: '浏览源文件' }).click();
   await filePicker().getByRole('heading', { name: '选择源文件' }).waitFor();
+  await poll(pickerDisabled, disabled => !disabled, 'initial file listing confirms the preselected regular file');
   assert.equal(normalizePath(await filePicker().getByLabel('当前目录').inputValue()), normalizePath(sourceA), 'the file picker opens the parent directory, never the file path itself');
   assert.equal(await pickerDisabled(), false, 'the existing regular file is preselected and confirmable');
   assert.ok((await filePicker().locator('.picker-selected').innerText()).includes('important.txt'), 'the preselected file name is shown');
@@ -621,6 +622,7 @@ try {
   // Reopening preselects it again; refreshing the listing must drop the selection.
   await dialog().getByRole('button', { name: '浏览源文件' }).click();
   await filePicker().getByRole('heading', { name: '选择源文件' }).waitFor();
+  await poll(pickerDisabled, disabled => !disabled, 'reopened file listing confirms the preselected regular file');
   assert.equal(await pickerDisabled(), false, 'reopening preselects the current file');
   await filePicker().getByRole('button', { name: '刷新目录' }).click();
   await poll(pickerDisabled, disabled => disabled, 'refresh clears the stale selection');

@@ -44,3 +44,9 @@ Logs and screenshots are under the exported tree's `.artifacts/`; focused UI evi
 ## Limits
 
 Local execution used Windows tools. The new installer success path, Linux full run, actual runtime image, CNB pipeline and arm64 execution must have their own evidence; none is inferred from Windows validation. Subsequent GitHub run status is recorded after submission. A branch/main push does not publish a container image, and no production deployment or version-tag release is requested here.
+
+## First submission and Linux follow-up
+
+`0245c22` was pushed and fast-forward merged to both remote branches on November 7. GitHub main run `42322774496` proves rclone 1.75.1 installation and **150/150 Linux tests passed, zero skipped**, including both installer rejection cases. The original 27-test dependency failure is resolved.
+
+Its browser step then exposed an existing synchronization race at `scripts/check-browser.mjs:602`: the source-picker heading is mounted before its asynchronous directory listing finishes, so immediately checking `isDisabled()` can run before preselection. Failure capture already shows the correct preselected filename after loading. The same assumption occurs on reopening. A scoped follow-up waits for the real confirmable state using the existing bounded poll, while retaining the original path/filename/confirm assertions. This changes only test synchronization and preserves the unrelated notification-script WIP. Subsequent run results are recorded below after verification.
